@@ -879,3 +879,16 @@ button.ghost.danger:hover {
   font-weight: 700;
   color: var(--gray-900);
 }
+
+/* MapLibre Overrides */
+.maplibregl-map {
+  cursor: grab;
+}
+.maplibregl-map:active {
+  cursor: grabbing;
+}
+.maplibregl-ctrl-group {
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+  border-radius: 8px !important;
+  border: none !important;
+}

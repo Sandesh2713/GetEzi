@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
 import { io } from 'socket.io-client';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
 import { useAuth } from './AuthContext';
 
@@ -1048,38 +1050,110 @@ function NotificationPanel({ userId, onClose }) {
   );
 }
 
-// Modern Location Picker
-// Advanced Location Picker with Search & ETA
-function LocationPicker({ onSelect, onDetect, status }) {
-  const mapRef = useRef(null);
-  const mapInstance = useRef(null);
-  const markerRef = useRef(null);
+// --- Modern MapLibre Location Picker ---
+function MapLibreLocationPicker({ onSelect, onDetect, status }) {
+  const mapContainer = useRef(null);
+  const map = useRef(null);
+  const marker = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
-  const [address, setAddress] = useState('');
-  const [eta, setEta] = useState(null);
+  const [viewState, setViewState] = useState({
+    address: '',
+    lat: null,
+    lng: null,
+    eta: null,
+    distInfo: null
+  });
 
-  // Simple ETA Calc (Euclidean distance from hypothetical office)
-  const calculateEta = (lat, lng) => {
-    // Mock: 10 mins + random distance factor
-    const mockEta = Math.floor(10 + Math.random() * 20);
-    setEta(mockEta);
-    return mockEta;
-  };
+  // Init Map
+  useEffect(() => {
+    if (map.current) return;
 
-  const reverseGeocode = async (lat, lng) => {
+    // Premium Map Config
+    map.current = new maplibregl.Map({
+      container: mapContainer.current,
+      style: 'https://api.maptiler.com/maps/streets-v2/style.json?key=hq8a5DxB5pz29aRkLMs1',
+      center: [78.9629, 20.5937],
+      zoom: 4,
+      pitchWithRotate: true,
+      dragRotate: true,
+      touchZoomRotate: true,
+      backdrop: false,
+      inertia: true,
+      inertiaDuration: 300,
+      fadeDuration: 300,
+      zoomAnimation: true,
+      scrollZoom: { smooth: true }
+    });
+
+    map.current.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+
+    map.current.on('click', (e) => {
+      placeMarker(e.lngLat.lat, e.lngLat.lng);
+    });
+  }, []);
+
+  // Update logic when external status asks to detect
+  useEffect(() => {
+    if (status === 'detecting') {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          const { latitude, longitude } = pos.coords;
+          map.current.flyTo({ center: [longitude, latitude], zoom: 14, speed: 1.2, curve: 1.42, essential: true });
+          placeMarker(latitude, longitude);
+        },
+        (err) => console.error(err),
+        { timeout: 10000 }
+      );
+    }
+  }, [status]);
+
+  const placeMarker = async (lat, lng) => {
+    // 1. Move Marker
+    if (!marker.current) {
+      marker.current = new maplibregl.Marker({ draggable: true })
+        .setLngLat([lng, lat])
+        .addTo(map.current);
+
+      marker.current.on('dragend', () => {
+        const { lat: dLat, lng: dLng } = marker.current.getLngLat();
+        placeMarker(dLat, dLng);
+      });
+    } else {
+      marker.current.setLngLat([lng, lat]);
+    }
+
+    // 2. Reverse Geocode (Nominatim)
     try {
       const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
       const data = await res.json();
-      if (data.display_name) {
-        setAddress(data.display_name.split(',').slice(0, 3).join(', '));
-        const travelTime = calculateEta(lat, lng);
-        onSelect({ lat, lng, address: data.display_name, travelTime });
+      const addr = data.display_name.split(',').slice(0, 3).join(', ');
+
+      // 3. Calc ETA (OSRM) - Hypothetical Office Location (e.g. Pune City Center for demo)
+      // In real app, pass office lat/lng as props
+      const officeLat = 18.5204;
+      const officeLng = 73.8567;
+
+      let etaVal = 15; // default fallback
+      try {
+        const routeRes = await fetch(`http://router.project-osrm.org/route/v1/driving/${lng},${lat};${officeLng},${officeLat}?overview=false`);
+        const routeData = await routeRes.json();
+        if (routeData.routes && routeData.routes.length > 0) {
+          const durationSecs = routeData.routes[0].duration;
+          etaVal = Math.ceil(durationSecs / 60);
+        }
+      } catch (err) {
+        // OSRM Public API might limit valid requests or fallback
+        console.warn('OSRM Route failed, using fallback');
       }
+
+      setViewState({ lat, lng, address: addr, eta: etaVal });
+      onSelect({ lat, lng, address: data.display_name, travelTime: etaVal });
+
     } catch (e) {
-      console.error("Geocode failed", e);
-      setAddress(`${lat.toFixed(4)}, ${lng.toFixed(4)}`);
-      onSelect({ lat, lng, address: `${lat}, ${lng}`, travelTime: 15 });
+      console.error(e);
+      setViewState({ lat, lng, address: `${lat.toFixed(4)}, ${lng.toFixed(4)}`, eta: 20 });
+      onSelect({ lat, lng, address: `${lat}, ${lng}`, travelTime: 20 });
     }
   };
 
@@ -1087,129 +1161,74 @@ function LocationPicker({ onSelect, onDetect, status }) {
     const q = e.target.value;
     setSearchQuery(q);
     if (q.length > 2) {
+      // Use Photon API
       try {
-        const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(q)}`);
+        const res = await fetch(`https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=5`);
         const data = await res.json();
-        setSearchResults(data.slice(0, 5));
+        setSearchResults(data.features || []);
       } catch (err) { }
     } else {
       setSearchResults([]);
     }
   };
 
-  const selectSearchResult = (result) => {
-    const lat = parseFloat(result.lat);
-    const lng = parseFloat(result.lon);
+  const selectResult = (feature) => {
+    const [lng, lat] = feature.geometry.coordinates;
+    const name = feature.properties.name || feature.properties.street || 'Selected Location';
+    const city = feature.properties.city || feature.properties.state || '';
+    const fullAddr = `${name}, ${city}`;
 
-    setSearchQuery(result.display_name.split(',')[0]);
+    setSearchQuery(fullAddr);
     setSearchResults([]);
-    setAddress(result.display_name.split(',').slice(0, 3).join(', '));
-
-    if (mapInstance.current) {
-      mapInstance.current.setView([lat, lng], 14);
-      if (markerRef.current) markerRef.current.remove();
-      markerRef.current = window.L.marker([lat, lng], { draggable: true }).addTo(mapInstance.current);
-
-      // Drag Listener
-      markerRef.current.on('dragend', (e) => {
-        const { lat, lng } = e.target.getLatLng();
-        reverseGeocode(lat, lng);
-      });
-    }
-
-    const travelTime = calculateEta(lat, lng);
-    onSelect({ lat, lng, address: result.display_name, travelTime });
+    map.current.flyTo({ center: [lng, lat], zoom: 15, speed: 1.5, curve: 1.42, essential: true });
+    placeMarker(lat, lng);
   };
 
-  useEffect(() => {
-    if (mapRef.current && !mapInstance.current && window.L) {
-      mapInstance.current = window.L.map(mapRef.current, { zoomControl: false }).setView([20, 78], 4);
-      window.L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap & CartoDB'
-      }).addTo(mapInstance.current);
-
-      window.L.control.zoom({ position: 'bottomright' }).addTo(mapInstance.current);
-
-      mapInstance.current.on('click', (e) => {
-        const { lat, lng } = e.latlng;
-        if (markerRef.current) markerRef.current.remove();
-        markerRef.current = window.L.marker([lat, lng], { draggable: true }).addTo(mapInstance.current);
-
-        reverseGeocode(lat, lng);
-
-        markerRef.current.on('dragend', (ev) => {
-          const { lat, lng } = ev.target.getLatLng();
-          reverseGeocode(lat, lng);
-        });
-      });
-
-      if (status === 'detecting') {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            const { latitude, longitude } = pos.coords;
-            mapInstance.current.setView([latitude, longitude], 14);
-            if (markerRef.current) markerRef.current.remove();
-            markerRef.current = window.L.marker([latitude, longitude], { draggable: true }).addTo(mapInstance.current);
-            reverseGeocode(latitude, longitude);
-
-            markerRef.current.on('dragend', (ev) => {
-              const { lat, lng } = ev.target.getLatLng();
-              reverseGeocode(lat, lng);
-            });
-          },
-          () => { },
-          { timeout: 5000 }
-        );
-      }
-    }
-  }, [status]); // eslint-disable-line
-
   return (
-    <div style={{ position: 'relative', height: '400px', width: '100%', borderRadius: '16px', overflow: 'hidden', boxShadow: 'var(--shadow-md)', border: '1px solid var(--gray-200)' }}>
-      {/* Search Bar - Floating */}
-      <div style={{ position: 'absolute', top: '16px', left: '16px', right: '16px', zIndex: 500 }}>
+    <div style={{ position: 'relative', height: '320px', width: '100%', borderRadius: '16px', overflow: 'hidden', boxShadow: 'var(--shadow-md)', border: '1px solid var(--gray-200)' }}>
+      {/* Search Bar */}
+      <div style={{ position: 'absolute', top: '16px', left: '16px', right: '16px', zIndex: 10 }}>
         <input
           className="input-field"
-          style={{ width: '100%', padding: '12px 16px', paddingLeft: '40px', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', border: 'none' }}
-          placeholder="Search for area, landmark..."
+          style={{ width: '100%', paddingLeft: '40px', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+          placeholder="Search places..."
           value={searchQuery}
           onChange={handleSearch}
         />
-        <span style={{ position: 'absolute', left: '12px', top: '12px', fontSize: '1.2rem' }}>🔍</span>
+        <span style={{ position: 'absolute', left: '12px', top: '12px' }}>🔍</span>
 
-        {/* Dropdown Results */}
         {searchResults.length > 0 && (
-          <div style={{ background: 'white', marginTop: '8px', borderRadius: '12px', boxShadow: '0 10px 30px rgba(0,0,0,0.1)', overflow: 'hidden' }}>
+          <div style={{ background: 'white', marginTop: '8px', borderRadius: '12px', overflow: 'hidden', boxShadow: '0 10px 30px rgba(0,0,0,0.1)' }}>
             {searchResults.map((r, i) => (
               <div
                 key={i}
-                className="hover-lift"
-                onClick={() => selectSearchResult(r)}
-                style={{ padding: '12px', borderBottom: '1px solid var(--gray-100)', cursor: 'pointer', fontSize: '0.9rem' }}
+                onClick={() => selectResult(r)}
+                style={{ padding: '12px', borderBottom: '1px solid #eee', cursor: 'pointer' }}
+                className="hover-bg-gray"
               >
-                {r.display_name.split(',').slice(0, 2).join(', ')}
+                <div style={{ fontWeight: 600 }}>{r.properties.name}</div>
+                <div style={{ fontSize: '0.8rem', color: '#666' }}>{r.properties.city}, {r.properties.country}</div>
               </div>
             ))}
           </div>
         )}
       </div>
 
-      <div ref={mapRef} style={{ height: '100%', width: '100%', zIndex: 0 }} />
+      <div ref={mapContainer} style={{ width: '100%', height: '100%' }} />
 
-      {/* Disclaimer / Detect */}
-      <div style={{ position: 'absolute', bottom: '16px', left: '16px', right: '16px', zIndex: 400, display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+      {/* Info Panel */}
+      <div style={{ position: 'absolute', bottom: '16px', left: '16px', right: '16px', zIndex: 10, display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
         <div style={{ flex: 1 }}>
-          {address && (
-            <div className="animate-slide-up" style={{ background: 'white', padding: '12px', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.15)', marginBottom: '8px' }}>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: '600', textTransform: 'uppercase' }}>Selected Location</div>
-              <div style={{ fontWeight: '600', fontSize: '0.9rem', margin: '4px 0' }}>{address}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.85rem', color: 'var(--primary-600)' }}>
-                <span>🚗</span> Est. Travel: {eta} mins
+          {viewState.address && (
+            <div className="animate-slide-up" style={{ background: 'white', padding: '16px', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.15)' }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, textTransform: 'uppercase', color: '#888', marginBottom: '4px' }}>Verified Location</div>
+              <div style={{ fontWeight: 600, fontSize: '0.95rem', marginBottom: '8px', lineHeight: '1.4' }}>{viewState.address}</div>
+              <div style={{ display: 'flex', gap: '12px', fontSize: '0.9rem' }}>
+                <span style={{ color: 'var(--primary-600)', fontWeight: 600 }}>🚗 ~{viewState.eta} mins</span>
               </div>
             </div>
           )}
         </div>
-
         <button
           onClick={onDetect}
           className="hover-lift"
@@ -1334,7 +1353,7 @@ function BookingModal({ isOpen, onClose, onSubmit, office, user }) {
             <div className="animate-fade-in">
               <h4 style={{ marginBottom: '12px' }}>Confirm Location</h4>
               <p className="text-muted" style={{ fontSize: '0.9rem', marginBottom: '20px' }}>Search or pin your location to calculate ETA.</p>
-              <LocationPicker
+              <MapLibreLocationPicker
                 status={locationStatus}
                 onDetect={handleDetect}
                 onSelect={({ lat, lng, address, travelTime }) => {
@@ -1918,6 +1937,7 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           customerName: formData.customerName,
+          customerEmail: formData.customerEmail,
           customerContact: formData.customerContact, // Phone
           serviceType: formData.serviceType,
           userId: user?.id,

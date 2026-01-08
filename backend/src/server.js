@@ -453,16 +453,17 @@ app.post('/api/offices/:id/book', (req, res) => {
   try {
     const { id } = req.params;
     const office = ensureOffice(id);
-    const { customerName, customerContact, lat, lng, userId, serviceType, customerAddress, travelTime: clientTravelTime } = req.body;
+    const { customerName, customerContact, customerEmail, lat, lng, userId, serviceType, customerAddress, travelTime: clientTravelTime } = req.body;
 
-    if (!customerName) return res.status(400).json({ error: 'Name required' });
+    if (!customerName || !customerEmail) return res.status(400).json({ error: 'Name and Email are required' });
+    if ((!lat || !lng) && !customerAddress) return res.status(400).json({ error: 'Valid Location required' });
 
     // Calc Travel Time
     let travelTime = 15; // default
     if (clientTravelTime) {
-      travelTime = clientTravelTime; // Trust client if provided (since we have better logic there now)
-    } else if (lat && lng && office.latitude && office.longitude) {
-      const dist = haversineDistance(lat, lng, office.latitude, office.longitude);
+      travelTime = clientTravelTime; // Trust client from OSRM
+    } else if (lat && lng && office.lat && office.lng) {
+      const dist = haversineDistance(lat, lng, office.lat, office.lng);
       travelTime = Math.ceil(dist * 2);
     }
 
