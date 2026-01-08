@@ -164,6 +164,7 @@ const officesStmt = {
   `),
   updateStats: db.prepare(`UPDATE offices SET avg_service_minutes = @avg WHERE id = @id`),
   updateConfig: db.prepare(`UPDATE offices SET counter_count = @n, max_allocated = @m WHERE id = @id`),
+  updateState: db.prepare(`UPDATE offices SET state = @state, pause_started_at = @time WHERE id = @id`),
 };
 
 const tokensStmt = {
@@ -574,6 +575,10 @@ app.post('/api/offices/:id/call-next', (req, res) => {
   const { id } = req.params;
   const office = ensureOffice(id);
 
+  if (office.state && office.state !== 'LIVE') {
+    return res.status(400).json({ error: `Office is currently ${office.state}. Resume to call next.` });
+  }
+
   // Logic: 
   // 1. Check Safety Lock: Count(CALLED) < N
   const all = tokensStmt.getForOffice.all(id);
@@ -818,14 +823,94 @@ app.post('/api/offices/:id/config', (req, res) => {
   const { id } = req.params;
   const { counterCount } = req.body;
   const N = parseInt(counterCount);
+
   if (isNaN(N) || N < 1) return res.status(400).json({ error: 'Invalid counter count' });
 
-  const M = N * 3;
-  officesStmt.updateConfig.run({ id, n: N, m: M });
+  db.transaction(() => {
+    officesStmt.updateConfig.run({
+      n: N,
+      m: N * 3,
+      id
+    });
+  })();
+
+  recalculateQueue(id);
+  res.json({ success: true });
+});
+
+// Admin: Pause Office
+app.post('/api/offices/:id/pause', (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body; // 'LUNCH', 'BREAK', 'MAINTENANCE'
+
+  const office = officesStmt.getById.get(id);
+  if (!office) return res.status(404).json({ error: 'Office not found' });
+
+  const now = toIso();
+
+  db.transaction(() => {
+    officesStmt.updateState.run({
+      id,
+      state: reason || 'PAUSED',
+      time: now
+    });
+  })();
+
+  // Emit Update
+  const updatedOffice = officesStmt.getById.get(id);
+  io.to(`office_${id}`).emit('office_state', {
+    state: updatedOffice.state,
+    pause_started_at: updatedOffice.pause_started_at
+  });
+
+  // Notify Waiters
+  const tokens = tokensStmt.getForOffice.all(id).filter(t => ['WAIT', 'ALLOCATED'].includes(t.status));
+  tokens.forEach(t => {
+    if (t.user_id) {
+      io.to(`user_${t.user_id}`).emit('notification', {
+        message: `Office is now ${reason || 'Paused'}. Queue is paused.`
+      });
+    }
+  });
+
+  res.json({ success: true, state: updatedOffice.state });
+});
+
+// Admin: Resume Office
+app.post('/api/offices/:id/resume', (req, res) => {
+  const { id } = req.params;
+
+  db.transaction(() => {
+    officesStmt.updateState.run({
+      id,
+      state: 'LIVE',
+      time: null
+    });
+  })();
+
+  // Recalculate to refresh ETAs relative to NOW
   recalculateQueue(id);
 
-  res.json({ success: true, N, M });
+  // Emit Update
+  const updatedOffice = officesStmt.getById.get(id);
+  io.to(`office_${id}`).emit('office_state', {
+    state: 'LIVE',
+    pause_started_at: null
+  });
+
+  // Notify Waiters
+  const tokens = tokensStmt.getForOffice.all(id).filter(t => ['WAIT', 'ALLOCATED'].includes(t.status));
+  tokens.forEach(t => {
+    if (t.user_id) {
+      io.to(`user_${t.user_id}`).emit('notification', {
+        message: `Office has resumed operations. Queue is moving.`
+      });
+    }
+  });
+
+  res.json({ success: true, state: 'LIVE' });
 });
+
 
 // Public: Get Office Status (Original Path was /api/offices/:id)
 // App.jsx calls /api/offices/:id for details

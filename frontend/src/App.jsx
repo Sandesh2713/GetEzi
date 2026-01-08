@@ -1751,17 +1751,50 @@ const HistoryView = ({ user, onBack, adminKey, selectedOfficeId }) => {
   );
 };
 
+// --- 4. Pause Modal ---
+function PauseModal({ isOpen, onClose, onPause }) {
+  if (!isOpen) return null;
+  const reasons = ['Short Break', 'Lunch Break', 'System Maintenance', 'End of Day'];
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} style={{ background: 'white', padding: '24px', borderRadius: '12px', width: '90%', maxWidth: '400px' }}>
+        <h3 style={{ marginBottom: '16px', fontSize: '1.25rem' }}>Pause Operations</h3>
+        <p style={{ color: '#6b7280', marginBottom: '20px' }}>Select a reason for pausing the queue. This will stop the ETA countdown for all customers.</p>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {reasons.map(r => (
+            <button key={r} className="btn btn-secondary" style={{ justifyContent: 'flex-start', textAlign: 'left' }} onClick={() => onPause(r)}>
+              {r}
+            </button>
+          ))}
+        </div>
+        <button className="btn btn-ghost" style={{ width: '100%', marginTop: '16px' }} onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// --- 5. Status Banner ---
+function StatusBanner({ office }) {
+  if (!office || !office.state || office.state === 'LIVE') return null;
+  return (
+    <div style={{
+      background: '#fffebf', color: '#92400e', padding: '12px',
+      textAlign: 'center', fontWeight: 600, borderBottom: '1px solid #fcd34d',
+      position: 'sticky', top: 0, zIndex: 90, gridColumn: '1 / -1'
+    }}>
+      ⏸ Office is currently PAUSED: {office.state}
+    </div>
+  );
+}
+
 function App() {
   const { user, logout, loading: authLoading } = useAuth();
 
   // Initialize view from history state or default
   const [view, setViewState] = useState(user ? (user.role === 'admin' ? 'admin' : 'customer') : 'landing');
 
-  // Pause Modal State
-  const [showPauseModal, setShowPauseModal] = useState(false);
-  const [pauseReason, setPauseReason] = useState('Short Break');
-  const [pauseMessage, setPauseMessage] = useState('');
-  const [selectedToken, setSelectedToken] = useState(null);
+
+
 
   // Wrapper to sync history
   const setView = (newView, addToHistory = true) => {
@@ -1814,10 +1847,74 @@ function App() {
   const [newOffice, setNewOffice] = useState({ name: '', serviceType: '', dailyCapacity: 100, operatingHours: '09:00-17:00', avgServiceMinutes: 10, latitude: '', longitude: '' });
   const [bookingForm, setBookingForm] = useState({ customerName: user?.name || '', customerContact: user?.email || '', serviceType: 'General Inquiry', note: '' });
   const [availabilityInput, setAvailabilityInput] = useState('');
-  const [isBusy, setIsBusy] = useState(false);
-  const [tokenFilter, setTokenFilter] = useState('pending'); // 'pending', 'completed', 'cancelled'
+  const [selectedToken, setSelectedToken] = useState(null);
+  const [tokenFilter, setTokenFilter] = useState('pending'); // 'pending' or 'history'
+  const [isPauseModalOpen, setIsPauseModalOpen] = useState(false);
+
+  // --- Pause / Resume Logic ---
+  const handlePause = async (reason) => {
+    if (!selectedOffice) return;
+    try {
+      const res = await fetchJSON(`/api/offices/${selectedOffice.id}/pause`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+      if (res.success) {
+        // Optimistic Update
+        setSelectedOfficeData(prev => ({ ...prev, office: { ...prev.office, state: res.state } }));
+        setIsPauseModalOpen(false);
+        // alert('Office Paused');
+      }
+    } catch (err) {
+      alert('Failed to pause: ' + err.message);
+    }
+  };
+
+  const handleResume = async () => {
+    if (!selectedOffice) return;
+    try {
+      const res = await fetchJSON(`/api/offices/${selectedOffice.id}/resume`, {
+        method: 'POST'
+      });
+      if (res.success) {
+        setSelectedOfficeData(prev => ({ ...prev, office: { ...prev.office, state: 'LIVE' } }));
+        // alert('Office Resumed');
+      }
+    } catch (err) {
+      alert('Failed to resume: ' + err.message);
+    }
+  };
 
   const selectedOffice = useMemo(() => selectedOfficeData?.office || null, [selectedOfficeData]);
+
+  // --- Socket Listeners ---
+  useEffect(() => {
+    if (selectedOffice) {
+      const socket = io(API_BASE);
+      socket.emit('join_office', selectedOffice.id);
+
+      socket.on('office_state', (data) => {
+        console.log('Office State Update:', data);
+        setSelectedOfficeData(prev => (prev && prev.office ? { ...prev, office: { ...prev.office, ...data } } : prev));
+      });
+
+      socket.on('queue_update', (data) => {
+        if (data.officeId === selectedOffice.id) {
+          if (data.tokens) setSelectedOfficeData(prev => (prev ? { ...prev, tokens: data.tokens } : prev));
+          if (data.office) setSelectedOfficeData(prev => (prev && prev.office ? { ...prev, office: { ...prev.office, ...data.office } } : prev));
+        }
+      });
+
+      socket.on('notification', (data) => {
+        setMessage(data.message);
+      });
+
+      return () => socket.disconnect();
+    }
+  }, [selectedOffice?.id]);
+
+
 
   // Poll for notifications if logged in
   useEffect(() => {
@@ -2205,6 +2302,7 @@ function App() {
         <SettingsView onBack={() => setView(user.role === 'admin' ? 'admin' : 'customer')} />
       ) : (
         <div className="dashboard-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 300px) 1fr', gap: '24px', alignItems: 'start' }}>
+          <StatusBanner office={selectedOffice} />
           <aside className="card" style={{ padding: '24px', height: 'fit-content' }}>
             <div className="view-toggle" style={{ marginBottom: 20 }}>
               {/* Role-based: show only relevant view or both if dual-role (simplified to strict separation) */}
@@ -2385,10 +2483,27 @@ function App() {
                       </div>
                       <div className="flex gap-2" style={{ display: 'flex', gap: '12px' }}>
                         <button onClick={handleAvailabilityUpdate} className="btn btn-secondary">Update</button>
-                        <button onClick={callNext} disabled={selectedOffice.is_paused || (selectedOfficeData?.tokens || []).filter(t => t.status === 'CALLED').length >= (selectedOffice.counter_count || 1)} className="btn btn-primary">Call Next</button>
-                        <button onClick={handlePauseToggle} className={`btn ${selectedOffice.is_paused ? 'btn-danger' : 'btn-secondary'}`}>
-                          {selectedOffice.is_paused ? 'Resume' : 'Pause'}
+
+                        {/* Call Next (Disabled if Paused) */}
+                        <button
+                          onClick={callNext}
+                          disabled={selectedOffice.state !== 'LIVE' || (selectedOfficeData?.tokens || []).filter(t => t.status === 'CALLED').length >= (selectedOffice.counter_count || 1)}
+                          className="btn btn-primary"
+                          style={{ opacity: selectedOffice.state !== 'LIVE' ? 0.5 : 1 }}
+                        >
+                          Call Next
                         </button>
+
+                        {/* Pause / Resume Button */}
+                        {selectedOffice.state === 'LIVE' ? (
+                          <button onClick={() => setIsPauseModalOpen(true)} className="btn btn-secondary" style={{ borderColor: '#fcd34d', background: '#fffbeb', color: '#92400e' }}>
+                            Pause
+                          </button>
+                        ) : (
+                          <button onClick={handleResume} className="btn btn-primary" style={{ background: '#16a34a', borderColor: '#16a34a' }}>
+                            Resume Operations
+                          </button>
+                        )}
                       </div>
                     </div>
 
@@ -2489,48 +2604,14 @@ function App() {
           </main>
         </div>
       )}
-      {/* Pause Modal (Moved to Root) */}
-      {showPauseModal && (
-        <div className="modal-overlay">
-          <div className="modal-content animate-slide-up">
-            <h3 style={{ marginTop: 0 }}>Pause Office Service</h3>
-            <div className="input-group">
-              <label className="input-label" style={{ marginBottom: '12px' }}>Select Reason</label>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                {[
-                  ['Short Break', 'Service paused for a short break. We will resume shortly.'],
-                  ['Lunch Break', 'Service paused for lunch break. Please wait for resume notification.'],
-                  ['System Maintenance', 'Service paused due to system maintenance. ETA will update after resume.']
-                ].map(([reason, msg]) => (
-                  <label key={reason} className="hover-lift" style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer', padding: '12px', border: '1px solid var(--gray-200)', borderRadius: '8px', transition: 'all 0.2s' }}>
-                    <input
-                      type="radio"
-                      name="pauseReason"
-                      checked={pauseReason === reason}
-                      onChange={() => { setPauseReason(reason); setPauseMessage(msg); }}
-                      style={{ accentColor: 'var(--primary-600)' }}
-                    />
-                    <span style={{ fontWeight: 500 }}>{reason}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-            <div className="input-group">
-              <label className="input-label">Additional Note (Optional)</label>
-              <textarea
-                className="input-field"
-                value={pauseMessage}
-                onChange={e => setPauseMessage(e.target.value)}
-                rows={3}
-              />
-            </div>
-            <div style={{ display: 'flex', gap: '12px', marginTop: '24px', justifyContent: 'flex-end' }}>
-              <button className="btn btn-ghost" onClick={() => setShowPauseModal(false)}>Cancel</button>
-              <button onClick={submitPause} className="btn btn-danger">Confirm Pause</button>
-            </div>
-          </div>
-        </div>
-      )}
+
+      {/* Pause Modal */}
+      <PauseModal
+        isOpen={isPauseModalOpen}
+        onClose={() => setIsPauseModalOpen(false)}
+        onPause={handlePause}
+      />
+
     </div>
   );
 }

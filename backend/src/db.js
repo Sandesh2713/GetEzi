@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS offices (
   service_count INTEGER DEFAULT 0,
   consecutive_slow_count INTEGER DEFAULT 0,
   average_velocity REAL DEFAULT 5.0,
-  is_paused INTEGER DEFAULT 0
+  average_velocity REAL DEFAULT 5.0,
+  is_paused INTEGER DEFAULT 0,
+  state TEXT DEFAULT 'LIVE',
+  pause_started_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -167,5 +170,9 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN arrival_status TEXT`); } catch (e) 
 // expected_arrival_time already exists in schema but let's ensure it covers all bases if needed, 
 // though 'expected_completion_time' was there, 'expected_arrival_time' is specific to this feature.
 try { db.exec(`ALTER TABLE tokens ADD COLUMN expected_arrival_time TEXT`); } catch (e) { }
+
+// Office Pause Schema
+try { db.exec(`ALTER TABLE offices ADD COLUMN state TEXT DEFAULT 'LIVE'`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN pause_started_at TEXT`); } catch (e) { }
 
 module.exports = db;
