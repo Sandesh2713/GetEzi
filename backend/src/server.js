@@ -203,7 +203,25 @@ const usersStmt = {
   insert: db.prepare(`INSERT INTO users (id, name, email, password_hash, role, created_at, is_verified) VALUES (@id, @name, @email, @hash, @role, @created_at, 0)`),
   updateRetention: db.prepare(`UPDATE users SET history_retention_days = ? WHERE id = ?`),
   getRetention: db.prepare(`SELECT history_retention_days FROM users WHERE id = ?`),
+  updateStats: db.prepare(`
+    UPDATE users SET 
+      total_tokens = total_tokens + 1,
+      total_completed = total_completed + @completed_inc,
+      total_no_show = total_no_show + @no_show_inc,
+      average_delay_minutes = (average_delay_minutes * total_tokens + @delay) / (total_tokens + 1),
+      last_activity_at = @now
+    WHERE id = @id
+  `),
+  updateActivity: db.prepare(`UPDATE users SET last_activity_at = @now WHERE id = @id`)
 };
+
+tokensStmt.updatePrediction = db.prepare(`
+  UPDATE tokens SET 
+    arrival_score = @score,
+    arrival_status = @status,
+    expected_arrival_time = @expected_time
+  WHERE id = @id
+`);
 
 const historyStmt = {
   archive: db.prepare(`
@@ -439,6 +457,44 @@ const haversineDistance = (lat1, lon1, lat2, lon2) => {
   return R * c;
 };
 
+// AI Prediction Engine
+const calculateArrivalScore = (token, user) => {
+  const now = Date.now();
+  const allocated = token.allocation_time ? new Date(token.allocation_time).getTime() : now;
+  const etaTime = token.expected_arrival_time ? new Date(token.expected_arrival_time).getTime() : (now + (token.travel_time_minutes || 15) * 60000);
+
+  // 1. Reliability Score (History)
+  let reliability = 1.0; // Default buffer for new users
+  if (user && user.total_tokens > 0) {
+    reliability = user.total_completed / user.total_tokens;
+  }
+
+  // 2. Activity Score
+  let activity = 0.2;
+  if (user && user.last_activity_at) {
+    const timeSinceActive = (now - new Date(user.last_activity_at).getTime()) / 60000;
+    if (timeSinceActive < 3) activity = 1.0;
+    else if (timeSinceActive < 10) activity = 0.6;
+  }
+
+  // 3. Time Progress / Lateness
+  let timeProgress = 1.0;
+  let latenessPenalty = 0.0;
+
+  const minutesUntilEta = (etaTime - now) / 60000;
+
+  if (minutesUntilEta < -5) {
+    // Late by >5 mins
+    latenessPenalty = Math.min(1.0, Math.abs(minutesUntilEta) / 15); // Max penalty at 15 mins late
+  }
+
+  // Formula
+  let score = (0.35 * reliability) + (0.25 * activity) + (0.25 * timeProgress) - (0.15 * latenessPenalty);
+
+  // Clamp
+  return Math.max(0, Math.min(1, score));
+};
+
 const ensureOffice = (id) => {
   const office = officesStmt.getById.get(id);
   if (!office) throw { status: 404, message: 'Office not found' };
@@ -529,13 +585,11 @@ app.post('/api/offices/:id/call-next', (req, res) => {
     return res.status(400).json({ error: `Cannot call next. All ${N} counters are active. Complete a user first.` });
   }
 
-  // 2. Pick Next from ALLOCATED (FIFO)
-  // Strict: Must be ALLOCATED. WAIT cannot be called directly (must wait for bulk promote).
-  // Is this robust? What if M=0? M=N*3 so M>=3.
-  // What if ALLOCATED is empty? (e.g. initial start)
-  // If queue has WAIT tokens, `recalculateQueue` should have promoted them.
-  // So if ALLOCATED is empty, it means no one is ready or logic hasn't run.
-  // We run logic first.
+  // 2. Pick Next from ALLOCATED (Prioritized)
+  // Logic: 
+  // A. Priority to 'ARRIVED' users (FIFO among them)
+  // B. Then Sort by 'arrival_score' DESC (Likely to arrive first)
+
   recalculateQueue(id); // Ensure fresh state
 
   // Re-fetch
@@ -545,26 +599,52 @@ app.post('/api/offices/:id/call-next', (req, res) => {
   let nextToken = null;
 
   if (allocated.length > 0) {
-    nextToken = allocated[0];
+    const arrived = allocated.filter(t => t.presence_status === 'ARRIVED');
+    if (arrived.length > 0) {
+      nextToken = arrived[0]; // FIFO among arrived
+    } else {
+      // Sort by score
+      allocated.sort((a, b) => (b.arrival_score || 0) - (a.arrival_score || 0));
+      nextToken = allocated[0];
+    }
   } else {
-    // Fallback: Check WAIT list (Auto-promote if stuck)
+    // Fallback: Check WAIT list
     const wait = freshAll.filter(t => t.status === 'WAIT');
     if (wait.length > 0) {
       nextToken = wait[0];
-      // We will treat it as ALLOCATED implicitly then CALLED immediately
     } else {
       return res.status(404).json({ error: 'No users in queue.' });
     }
   }
 
-  // Guard: Presence Check
-  if (nextToken.presence_status !== 'ARRIVED') {
-    return res.status(400).json({
-      error: 'Customer has not confirmed arrival yet.',
-      code: 'NOT_ARRIVED',
-      token: nextToken
-    });
-  }
+  // Guard: Presence Check (Relaxed for Likely ones? No, standard flow still applies)
+  // If we picked a high-score person who hasn't Arrived, do we block?
+  // The system says: "Pick the ALLOCATED token with... highest score".
+  // But if presence is mandatory for `CALLED` status transition, then we can't call them yet?
+  // User Prompt: "Prevent unreliable users from blocking the queue".
+  // If we pick highest score, and they aren't here... we might be blocked if we enforce presence.
+  // HOWEVER, steps say: "Pick ... highest arrival_score".
+  // If we enforce line 561 (Guard: Presence Check), then we fail.
+  // We should likely ALLOW calling them if score is high enough? 
+  // OR, the Guard is only if we want stricter control.
+  // Let's keep the Guard but maybe we should only pick if they are close?
+  // Actually, if we pick them and they are not arrived, we throw "Customer has not confirmed arrival yet".
+  // Then the admin sees "Error".
+  // This implies we should ONLY pick if `arrived` OR we remove the guard.
+  // Let's remove the GUARD if status is 'LIKELY_TO_ARRIVE'?
+  // Or just relax it. The "Smart Call Next" prevents counter idle.
+  // If we pick someone not arrived, we can't serve them.
+  // So the logic must be: Pick highest score... but what if they aren't here?
+  // "This prevents counters sitting idle" -> Implies we can call them.
+  // I will comment out the Strict Presence Check for now, or make it optional?
+  // Let's Assume "Call" means announcing them. If they aren't there, we mark No Show manually or wait.
+  // So I'll remove the strict 400 error return, maybe just warn or allow.
+
+  // Actually, the previous implementation (lines 560-566) BLOCKS calling if not arrived.
+  // If I keep it, "Smart Call Next" fails for non-arrived users.
+  // I will REMOVE the block but keep the warning in the returned object or logs?
+  // Better: I will Remove the block.
+
 
   const now = toIso();
 
@@ -610,6 +690,16 @@ app.post('/api/tokens/:id/complete', (req, res) => {
       now: toIso(),
       eta: null
     });
+
+    if (token.user_id) {
+      usersStmt.updateStats.run({
+        id: token.user_id,
+        completed_inc: 1,
+        no_show_inc: 0,
+        delay: 0,
+        now: toIso()
+      });
+    }
   })();
 
   recalculateQueue(token.office_id);
@@ -681,6 +771,16 @@ app.post('/api/tokens/:id/no-show', (req, res) => {
       now: toIso(),
       eta: null
     });
+
+    if (token.user_id) {
+      usersStmt.updateStats.run({
+        id: token.user_id,
+        completed_inc: 0,
+        no_show_inc: 1,
+        delay: 0,
+        now: toIso()
+      });
+    }
   })();
 
   recalculateQueue(token.office_id);
@@ -984,9 +1084,91 @@ app.get('/api/admin/token-history/export', authenticateToken, async (req, res) =
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename=token_history_${officeId}_${Date.now()}.xlsx`);
 
-  await workbook.xlsx.write(res);
   res.end();
 });
+
+/* --- AI Prediction Loop --- */
+const recalculateArrivalLikelihood = (officeId) => {
+  const office = officesStmt.getById.get(officeId);
+  if (!office) return;
+
+  const tokens = tokensStmt.getForOffice.all(officeId).filter(t => t.status === 'ALLOCATED');
+  if (tokens.length === 0) return;
+
+  const now = Date.now();
+  let changes = false;
+
+  tokens.forEach(token => {
+    // Skip if arrived
+    if (token.presence_status === 'ARRIVED') return;
+
+    let user = null;
+    if (token.user_id) user = usersStmt.getById.get(token.user_id);
+
+    const score = calculateArrivalScore(token, user);
+
+    // Classify
+    let status = 'PROBABLE_NO_SHOW';
+    if (score >= 0.75) status = 'LIKELY_TO_ARRIVE';
+    else if (score >= 0.40) status = 'ON_THE_WAY';
+
+    // Auto No-Show Check
+    // If score < 0.25 AND time > expected + 5 mins grace
+    const uniqueEta = token.expected_arrival_time;
+    if (score < 0.25 && uniqueEta) {
+      const etaTime = new Date(uniqueEta).getTime();
+      if (now > etaTime + 5 * 60000) {
+        // Trigger No-Show
+        console.log(`AI Auto No-Show: Token ${token.token_number} (Score: ${score.toFixed(2)})`);
+        tokensStmt.updateStatus.run({
+          id: token.id,
+          status: 'no-show',
+          allocation_time: token.allocation_time,
+          service_start_time: null,
+          expected_completion_time: null,
+          called_at: null,
+          completed_at: toIso(),
+          now: toIso(),
+          eta: null
+        });
+        // Update Stats
+        if (token.user_id) {
+          usersStmt.updateStats.run({ id: token.user_id, completed_inc: 0, no_show_inc: 1, delay: 0, now: toIso() });
+        }
+        changes = true;
+        return; // Stop processing this token
+      }
+    }
+
+    // Update DB if score changed sufficiently to avoid trashing DB? 
+    // Just update. SQLite WAL is fast.
+    tokensStmt.updatePrediction.run({
+      id: token.id,
+      score,
+      status,
+      expected_time: token.expected_arrival_time || new Date(now + (token.travel_time_minutes || 15) * 60000).toISOString()
+    });
+    changes = true;
+  });
+
+  if (changes) {
+    io.to(`office_${officeId}`).emit('queue_update', {
+      officeId,
+      tokens: enrichTokens(tokensStmt.getForOffice.all(officeId))
+      // We could send just the updates but full refresh is safer for sync
+    });
+  }
+};
+
+// Run Prediction Loop every 30s
+setInterval(() => {
+  try {
+    const offices = officesStmt.getAll.all();
+    offices.forEach(o => recalculateArrivalLikelihood(o.id));
+  } catch (e) {
+    console.error('Prediction Loop Error:', e);
+  }
+}, 30000);
 
 /* --- Cron Jobs --- */
 

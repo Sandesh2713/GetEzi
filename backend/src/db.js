@@ -43,7 +43,13 @@ CREATE TABLE IF NOT EXISTS users (
   dob TEXT,
   gender TEXT,
   age INTEGER,
+  age INTEGER,
   is_verified INTEGER DEFAULT 0,
+  total_tokens INTEGER DEFAULT 0,
+  total_completed INTEGER DEFAULT 0,
+  total_no_show INTEGER DEFAULT 0,
+  average_delay_minutes REAL DEFAULT 0,
+  last_activity_at TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -66,6 +72,9 @@ CREATE TABLE IF NOT EXISTS tokens (
   travel_time_minutes INTEGER,
   service_type TEXT,
   customer_address TEXT,
+  arrival_score REAL,
+  arrival_status TEXT,
+  expected_arrival_time TEXT,
   FOREIGN KEY (office_id) REFERENCES offices(id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -145,5 +154,18 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN allocation_time TEXT`); } catch (e)
 try { db.exec(`ALTER TABLE tokens ADD COLUMN service_start_time TEXT`); } catch (e) { }
 try { db.exec(`ALTER TABLE tokens ADD COLUMN expected_completion_time TEXT`); } catch (e) { }
 try { db.exec(`ALTER TABLE tokens ADD COLUMN last_updated_at TEXT`); } catch (e) { }
+
+// AI Arrival Prediction Schema
+try { db.exec(`ALTER TABLE users ADD COLUMN total_tokens INTEGER DEFAULT 0`); } catch (e) { }
+try { db.exec(`ALTER TABLE users ADD COLUMN total_completed INTEGER DEFAULT 0`); } catch (e) { }
+try { db.exec(`ALTER TABLE users ADD COLUMN total_no_show INTEGER DEFAULT 0`); } catch (e) { }
+try { db.exec(`ALTER TABLE users ADD COLUMN average_delay_minutes REAL DEFAULT 0`); } catch (e) { }
+try { db.exec(`ALTER TABLE users ADD COLUMN last_activity_at TEXT`); } catch (e) { }
+
+try { db.exec(`ALTER TABLE tokens ADD COLUMN arrival_score REAL`); } catch (e) { }
+try { db.exec(`ALTER TABLE tokens ADD COLUMN arrival_status TEXT`); } catch (e) { }
+// expected_arrival_time already exists in schema but let's ensure it covers all bases if needed, 
+// though 'expected_completion_time' was there, 'expected_arrival_time' is specific to this feature.
+try { db.exec(`ALTER TABLE tokens ADD COLUMN expected_arrival_time TEXT`); } catch (e) { }
 
 module.exports = db;

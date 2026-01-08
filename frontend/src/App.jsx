@@ -218,6 +218,18 @@ function AdminTokenRow({ token, onComplete, onNoShow, onCancel, onReQueue, onSel
           <span className="badge" style={{ backgroundColor: isArrived ? '#dcfce7' : '#fee2e2', color: isArrived ? '#166534' : '#991b1b' }}>
             {isArrived ? 'Arrived' : 'Not Arrived'}
           </span>
+          {!isArrived && token.arrival_status && (
+            <span className="badge" style={{
+              backgroundColor: token.arrival_status === 'LIKELY_TO_ARRIVE' ? '#dcfce7' : (token.arrival_status === 'ON_THE_WAY' ? '#fef9c3' : '#fee2e2'),
+              color: token.arrival_status === 'LIKELY_TO_ARRIVE' ? '#166534' : (token.arrival_status === 'ON_THE_WAY' ? '#854d0e' : '#991b1b'),
+              display: 'flex', alignItems: 'center', gap: '4px'
+            }}>
+              {token.arrival_status === 'LIKELY_TO_ARRIVE' && '🟢 Likely'}
+              {token.arrival_status === 'ON_THE_WAY' && '🟡 On Way'}
+              {token.arrival_status === 'PROBABLE_NO_SHOW' && '🔴 Risk'}
+              <span style={{ opacity: 0.7, fontSize: '0.7em' }}>({Math.round((token.arrival_score || 0) * 100)}%)</span>
+            </span>
+          )}
         </div>
       </div>
 
