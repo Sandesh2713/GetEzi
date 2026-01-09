@@ -196,4 +196,21 @@ CREATE TABLE IF NOT EXISTS active_staff (
 );
 `);
 
+// Migration for active_staff last_seen
+try { db.exec(`ALTER TABLE active_staff ADD COLUMN last_seen TEXT`); } catch (e) { }
+try { db.exec(`ALTER TABLE active_staff ADD COLUMN socket_id TEXT`); } catch (e) { }
+
+// Counters Table for Atomic Locking (Strict Unique)
+db.exec(`
+DROP TABLE IF EXISTS counters;
+CREATE TABLE counters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  office_id TEXT NOT NULL,
+  counter_number INTEGER NOT NULL,
+  user_id TEXT UNIQUE, -- admin_id in user spec (mapped to user_id here)
+  last_seen INTEGER,
+  UNIQUE(office_id, counter_number)
+);
+`);
+
 module.exports = db;

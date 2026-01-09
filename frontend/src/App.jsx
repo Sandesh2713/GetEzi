@@ -1948,6 +1948,7 @@ function App() {
 
   const [registerRole, setRegisterRole] = useState('customer');
   const [loginRole, setLoginRole] = useState(''); // 'admin' | 'customer' | ''
+  const [connectionStatus, setConnectionStatus] = useState('CONNECTED'); // CONNECTED, LOST
   const [tempEmail, setTempEmail] = useState(''); // For password reset flow
   const [offices, setOffices] = useState([]);
   const [selectedOfficeId, setSelectedOfficeId] = useState('');
@@ -2039,6 +2040,67 @@ function App() {
       return () => socket.disconnect();
     }
   }, [selectedOffice?.id]);
+
+  // --- Heartbeat & Connection Monitoring ---
+  useEffect(() => {
+    if (!user || user.role !== 'admin') return;
+
+    const socket = io(API_BASE);
+
+    // Heartbeat Loop
+    const hbInterval = setInterval(() => {
+      socket.emit('admin_heartbeat', user.id);
+    }, 10000);
+
+    // Connection State
+    socket.on('connect', () => {
+      setConnectionStatus('CONNECTED');
+    });
+    socket.on('disconnect', () => {
+      setConnectionStatus('LOST');
+    });
+    socket.on('connection_status', (status) => { // If we had custom
+      // setConnectionStatus(status);
+    });
+
+    // Listen for Role Promotion/Demotion
+    socket.on('role_update', (data) => {
+      // data: { role: 'OPERATOR', counter_number: 1 }
+      console.log('Role Update Received:', data);
+      if (data.role) {
+        setUser(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            operational_role: data.role,
+            assigned_counter: data.counter_number
+          };
+        });
+        // If promoted, notify
+        if (data.role === 'OPERATOR') {
+          // alert(`You have been promoted to Counter ${data.counter_number}`);
+          // Or just let UI update.
+          // Maybe flash message.
+          // We can use setMessage logic if available in this scope?
+        }
+      }
+    });
+
+    // Tab Close Warning
+    // Tab Close Warning
+    const handleBeforeUnload = (e) => {
+      e.preventDefault();
+      e.returnValue = 'Leaving this page will log you out and free your counter.';
+      return e.returnValue;
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      clearInterval(hbInterval);
+      socket.disconnect();
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [user]);
 
 
 
@@ -2344,6 +2406,11 @@ function App() {
 
   return (
     <div className="app">
+      {connectionStatus === 'LOST' && (
+        <div style={{ backgroundColor: '#dc3545', color: 'white', padding: '10px', textAlign: 'center', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 1000 }}>
+          Connection Lost — Reconnecting...
+        </div>
+      )}
       {showHeader && (
         <header className="app-header">
           <div>

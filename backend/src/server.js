@@ -44,7 +44,75 @@ io.on('connection', (socket) => {
   socket.on('join_user', (userId) => {
     socket.join(`user_${userId}`);
   });
+
+  socket.on('admin_heartbeat', (userId) => {
+    try {
+      if (!userId) return;
+      const now = Date.now();
+
+      // 1. Update Session (Spectators + Operators)
+      activeStaffStmt.updateHeartbeat.run({
+        now: new Date(now).toISOString(),
+        socket_id: socket.id,
+        user_id: userId
+      });
+
+      // 2. Pulse Counter (If Operator) - Keeps Lock Alive
+      countersStmt.pulse.run(now, userId);
+
+    } catch (e) { console.error('Heartbeat Error:', e); }
+  });
 });
+
+// --- Automatic Staff Cleanup (Ghost Counter Prevention) ---
+// --- Automatic Staff Cleanup (Ghost Counter Prevention) ---
+setInterval(() => {
+  try {
+    const NOW = Date.now();
+    const CUTOFF_MS = NOW - 30000; // 30s grace (User Req)
+    const CUTOFF_ISO = new Date(CUTOFF_MS).toISOString();
+
+    // 1. Find Stale Counters (Ghost Desks - Critical)
+    const staleCounters = countersStmt.getStale.all(CUTOFF_MS);
+
+    // 2. Find Stale Spectators (Ghost Sessions)
+    // Note: getStale uses ISO string for active_staff
+    const staleSessions = activeStaffStmt.getStale.all({ cutoff: CUTOFF_ISO });
+
+    // Create unique set of user IDs to release
+    const toRelease = new Set([
+      ...staleCounters.map(c => c.user_id),
+      ...staleSessions.map(s => s.user_id)
+    ]);
+
+    if (toRelease.size > 0) {
+      console.log(`Cleaning up ${toRelease.size} stale users...`);
+      toRelease.forEach(userId => {
+        const result = releaseStaff(userId);
+        if (result && result.officeId) {
+          console.log(`Released Stale User: ${userId}`);
+
+          // Refresh Dashboard
+          const staffList = activeStaffStmt.getForOffice.all(result.officeId);
+          io.to(`office_${result.officeId}`).emit('staff_update', staffList);
+
+          // Notify Promotion
+          if (result.promotedUser) {
+            io.to(`user_${result.promotedUser.userId}`).emit('role_update', {
+              role: 'OPERATOR',
+              counter_number: result.promotedUser.counterNumber
+            });
+          }
+
+          // Recalculate queue
+          recalculateQueue(result.officeId);
+        }
+      });
+    }
+  } catch (e) {
+    console.error('Staff Cleanup Job Error:', e);
+  }
+}, 5000); // Check every 5s
 
 /* --- Email Helper --- */
 const transporter = nodemailer.createTransport({
@@ -250,52 +318,114 @@ const activeStaffStmt = {
   delete: db.prepare(`DELETE FROM active_staff WHERE user_id = ?`),
   countOperators: db.prepare(`SELECT COUNT(*) as count FROM active_staff WHERE office_id = ? AND role = 'OPERATOR'`),
   getOldestSpectator: db.prepare(`SELECT * FROM active_staff WHERE office_id = ? AND role = 'SPECTATOR' ORDER BY login_time ASC LIMIT 1`),
-  updateRole: db.prepare(`UPDATE active_staff SET role = 'OPERATOR', counter_number = ? WHERE user_id = ?`)
+  updateRole: db.prepare(`UPDATE active_staff SET role = 'OPERATOR', counter_number = ? WHERE user_id = ?`),
+  updateHeartbeat: db.prepare(`UPDATE active_staff SET last_seen = @now, socket_id = @socket_id WHERE user_id = @user_id`),
+  getStale: db.prepare(`SELECT * FROM active_staff WHERE last_seen < @cutoff`)
+};
+
+const countersStmt = {
+  // Sync
+  deleteExcess: db.prepare(`DELETE FROM counters WHERE office_id = ? AND counter_number > ?`),
+  insert: db.prepare(`INSERT OR IGNORE INTO counters (office_id, counter_number) VALUES (?, ?)`),
+
+  // Claim
+  checkOwner: db.prepare(`SELECT * FROM counters WHERE user_id = ?`),
+  findFree: db.prepare(`SELECT id FROM counters WHERE office_id = ? AND user_id IS NULL ORDER BY counter_number ASC LIMIT 1`),
+  claim: db.prepare(`UPDATE counters SET user_id = ? WHERE id = ?`),
+
+  // Release
+  release: db.prepare(`UPDATE counters SET user_id = NULL WHERE user_id = ?`)
+};
+
+const syncCounters = (officeId, maxCounters) => {
+  // 1. Remove excess (if availability reduced)
+  // Be careful: if a user is assigned to a high counter, they lose it? 
+  // User req doesn't specify, but implies consistency. 
+  // For now we wipe excess.
+  countersStmt.deleteExcess.run(officeId, maxCounters);
+
+  // 2. Add missing
+  for (let c = 1; c <= maxCounters; c++) {
+    countersStmt.insert.run(officeId, c);
+  }
 };
 
 const assignStaffRole = (officeId, userId, maxCounters) => {
-  // 1. Count active operators
-  const count = activeStaffStmt.countOperators.get(officeId).count;
+  // 0. Ensure counters exist
+  syncCounters(officeId, maxCounters);
 
-  // 2. Determine Role
-  if (count < maxCounters) {
-    // Find first available counter number (1..N)
-    // We need to know WHICH numbers are taken.
-    const operators = activeStaffStmt.getForOffice.all(officeId).filter(s => s.role === 'OPERATOR');
-    const taken = new Set(operators.map(s => s.counter_number));
-    let counterNum = 1;
-    while (taken.has(counterNum)) counterNum++;
+  let assignedRole = 'SPECTATOR';
+  let assignedCounter = null;
 
-    return { role: 'OPERATOR', counter_number: counterNum };
-  } else {
-    // Full -> Spectator
+  // Transaction for Atomicity
+  const txn = db.transaction(() => {
+    // 1. Check if user already owns a counter (Reconnect/Refresh safety)
+    const existing = countersStmt.checkOwner.get(userId);
+    if (existing) {
+      if (existing.office_id === officeId.toString()) { // Ensure same office
+        return { role: 'OPERATOR', counter_number: existing.counter_number };
+      } else {
+        // User moved office? Release old lock.
+        countersStmt.release.run(userId);
+      }
+    }
+
+    // 2. Try to grab first free counter
+    // "SELECT FOR UPDATE" equivalent in SQLite transaction
+    const free = countersStmt.findFree.get(officeId);
+    if (free) {
+      countersStmt.claim.run(userId, free.id);
+      return { role: 'OPERATOR', counter_number: db.prepare('SELECT counter_number FROM counters WHERE id = ?').get(free.id).counter_number };
+    }
+
+    // 3. Fallback
     return { role: 'SPECTATOR', counter_number: null };
-  }
+  });
+
+  return txn();
 };
 
 const releaseStaff = (userId) => {
-  // 1. Get current staff info
+  // 1. Get current staff info for context (before delete)
   const staff = activeStaffStmt.getByUser.get(userId);
   if (!staff) return null;
 
-  // 2. Remove
+  // 2. Remove from Active Staff (Session)
   activeStaffStmt.delete.run(userId);
 
-  // 3. Promotion Logic
+  // 3. Release Counter Lock
+  countersStmt.release.run(userId);
+
+  // 4. Promotion Logic
   let promotedUser = null;
-  if (staff.role === 'OPERATOR') {
-    // We freed up a spot (specifically staff.counter_number)
-    // Find oldest spectator
-    const spectator = activeStaffStmt.getOldestSpectator.get(staff.office_id);
-    if (spectator) {
-      activeStaffStmt.updateRole.run(staff.counter_number, spectator.user_id);
+
+  // Only promote if we actually freed a spot? 
+  // Technically countersStmt.release ensures a spot is free (if they had one).
+  // We check if there's a spectator waiting.
+  const spectator = activeStaffStmt.getOldestSpectator.get(staff.office_id);
+
+  if (spectator) {
+    // Try to assign them a role (Atomic Claim)
+    // We need office max counters? Use a default or fetch office.
+    // Ideally pass it in, but here we don't have it.
+    // Fetch office config:
+    const office = officesStmt.getById.get(staff.office_id);
+    const N = office ? (office.counter_count || 1) : 1;
+
+    const assignment = assignStaffRole(staff.office_id, spectator.user_id, N);
+
+    if (assignment.role === 'OPERATOR') {
+      // Update their session in active_staff
+      activeStaffStmt.updateRole.run(assignment.counter_number, spectator.user_id);
+
       promotedUser = {
         userId: spectator.user_id,
         newRole: 'OPERATOR',
-        counterNumber: staff.counter_number
+        counterNumber: assignment.counter_number
       };
     }
   }
+
   return {
     officeId: staff.office_id,
     promotedUser
@@ -1031,6 +1161,9 @@ app.post('/api/offices/:id/config', authenticateToken, (req, res) => {
       id
     });
   })();
+
+  // Sync atomic counters table
+  syncCounters(id, N);
 
   recalculateQueue(id);
   res.json({ success: true });
