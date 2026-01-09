@@ -1603,6 +1603,35 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // New Availability State
+  const [availability, setAvailability] = useState(1);
+
+  // Fetch Office Config on Mount
+  useEffect(() => {
+    if (selectedOfficeId) {
+      fetchJSON(`/api/offices/${selectedOfficeId}`)
+        .then(data => {
+          if (data && data.office) {
+            setAvailability(data.office.counter_count || 1);
+          }
+        })
+        .catch(err => console.error("Failed to load office config", err));
+    }
+  }, [selectedOfficeId]);
+
+  const handleSaveAvailability = async () => {
+    if (!adminKey) return setMessage('Admin Access Required');
+    setLoading(true);
+    try {
+      await fetchJSON(`/api/offices/${selectedOfficeId}/config`, {
+        method: 'PATCH',
+        headers: { 'x-admin-key': adminKey },
+        body: JSON.stringify({ counterCount: Number(availability) }),
+      });
+      setMessage('Office capacity updated.');
+    } catch (err) { setMessage(err.message); } finally { setLoading(false); }
+  };
+
   const handleSaveRetention = async () => {
     if (!adminKey) return setMessage('Admin Access Required');
     setLoading(true);
@@ -1648,6 +1677,38 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
       </div>
 
       <div style={{ display: 'grid', gap: '24px' }}>
+        {/* Office Settings (Availability) */}
+        {user.role === 'admin' && (
+          <section className="card hover-lift">
+            <div className="panel-header">
+              <div>
+                <h3 style={{ fontSize: '1.2rem' }}>Office Settings</h3>
+                <p className="text-muted" style={{ fontSize: '0.9rem', marginTop: '4px' }}>Configure operational capacity.</p>
+              </div>
+            </div>
+            <div className="grid-2">
+              <div className="input-group">
+                <label className="input-label">Max Active Counters (Availability)</label>
+                <input
+                  type="number"
+                  className="input-field"
+                  value={availability}
+                  onChange={e => setAvailability(e.target.value)}
+                  min="1"
+                />
+                <small className="text-muted" style={{ fontSize: '0.8rem', marginTop: '4px' }}>
+                  Limits simultaneous operators. Excess admins become Spectators.
+                </small>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', paddingTop: '28px' }}>
+                <button className="btn btn-primary" onClick={handleSaveAvailability} disabled={loading} style={{ width: '100%' }}>
+                  Update Capacity
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Data Retention Card */}
         {user.role === 'admin' ? (
           <>
@@ -1950,6 +2011,7 @@ function App() {
   };
 
   const selectedOffice = useMemo(() => selectedOfficeData?.office || null, [selectedOfficeData]);
+  const counters = useMemo(() => selectedOfficeData?.active_staff || [], [selectedOfficeData]);
 
   // --- Socket Listeners ---
   useEffect(() => {
@@ -1965,6 +2027,7 @@ function App() {
       socket.on('queue_update', (data) => {
         if (data.officeId === selectedOffice.id) {
           if (data.tokens) setSelectedOfficeData(prev => (prev ? { ...prev, tokens: data.tokens } : prev));
+          if (data.active_staff) setSelectedOfficeData(prev => (prev ? { ...prev, active_staff: data.active_staff } : prev));
           if (data.office) setSelectedOfficeData(prev => (prev && prev.office ? { ...prev, office: { ...prev.office, ...data.office } } : prev));
         }
       });
@@ -2094,7 +2157,7 @@ function App() {
       setLoading(true);
       const data = await fetchJSON(`/api/offices/${id}`);
       setSelectedOfficeData(data);
-      setAvailabilityInput(data.office.available_today);
+      setAvailabilityInput(data.office.counter_count || 1);
     } catch (err) { setMessage(err.message); } finally { setLoading(false); }
   };
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
@@ -2104,7 +2167,7 @@ function App() {
     if (!formData.customerName) return setMessage('Name required');
 
     try {
-      setIsBusy(true);
+      setLoading(true);
       await fetchJSON(`/api/offices/${selectedOfficeId}/book`, {
         method: 'POST',
         body: JSON.stringify({
@@ -2127,13 +2190,13 @@ function App() {
     } catch (err) {
       setMessage(err.message);
     } finally {
-      setIsBusy(false);
+      setLoading(false);
     }
   };
 
   const handleCreateOffice = async (officeData) => {
     try {
-      setIsBusy(true);
+      setLoading(true);
       await fetchJSON('/api/offices', {
         method: 'POST',
         body: JSON.stringify(officeData),
@@ -2141,16 +2204,17 @@ function App() {
       setMessage('Office created');
       await loadOffices();
       setView('admin'); // Go to dashboard
-    } catch (err) { setMessage(err.message); } finally { setIsBusy(false); }
+    } catch (err) { setMessage(err.message); } finally { setLoading(false); }
   };
 
   const handleAvailabilityUpdate = async () => {
     if (!adminKey) return setMessage('Admin key required');
     try {
-      await fetchJSON(`/api/offices/${selectedOfficeId}/availability`, {
-        method: 'PATCH',
+      // Use config endpoint to update counter_count (Availability)
+      await fetchJSON(`/api/offices/${selectedOfficeId}/config`, {
+        method: 'POST',
         headers: { 'x-admin-key': adminKey },
-        body: JSON.stringify({ availableToday: Number(availabilityInput) }),
+        body: JSON.stringify({ counterCount: Number(availabilityInput) }),
       });
       setMessage('Availability updated');
       fetchOfficeDetail(selectedOfficeId);
@@ -2529,13 +2593,17 @@ function App() {
 
                 {view === 'admin' && (
                   <section className="card" style={{ marginBottom: '24px' }}>
-                    <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Admin Controls</h4>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                      <h4 style={{ fontSize: '1.1rem', margin: 0 }}>Admin Controls</h4>
+                      {/* Spectator Count Badge */}
+                      <span className="badge badge-neutral">
+                        Spectators Waiting: {counters.filter(s => s.role === 'SPECTATOR').length}
+                      </span>
+                    </div>
+
                     <div className="admin-controls-grid">
+                      {/* Left Side: Keys & Info */}
                       <div className="grid-2" style={{ marginBottom: '16px' }}>
-                        <div className="input-group">
-                          <span className="input-label">Availability</span>
-                          <input className="input-field" type="number" value={availabilityInput} onChange={e => setAvailabilityInput(e.target.value)} />
-                        </div>
                         <div className="input-group" style={{ position: 'relative' }}>
                           <span className="input-label">Admin Key</span>
                           <div style={{ position: 'relative' }}>
@@ -2556,50 +2624,70 @@ function App() {
                             </button>
                           </div>
                         </div>
+                        {/* More meta info or empty for spacing */}
+                        <div className="input-group">
+                          <span className="input-label">My Role</span>
+                          <div className={`badge ${user.operational_role === 'OPERATOR' ? 'badge-primary' : 'badge-warning'}`} style={{ marginTop: '8px', display: 'inline-flex' }}>
+                            {user.operational_role} {user.operational_role === 'OPERATOR' && `#${user.assigned_counter}`}
+                          </div>
+                        </div>
                       </div>
+
+                      {/* Right Side: Actions */}
                       <div className="flex gap-2" style={{ display: 'flex', gap: '12px' }}>
-                        <button onClick={handleAvailabilityUpdate} className="btn btn-secondary">Update</button>
+                        {user.operational_role === 'OPERATOR' ? (
+                          <>
+                            {/* Call Next (Locked to Assigned Counter) */}
+                            <button
+                              onClick={callNext}
+                              disabled={selectedOffice.state !== 'LIVE' || (selectedOfficeData?.tokens || []).filter(t => t.status === 'CALLED' && t.called_by_counter === user.assigned_counter).length > 0}
+                              className="btn btn-primary"
+                              style={{ opacity: selectedOffice.state !== 'LIVE' ? 0.5 : 1 }}
+                            >
+                              Call Next (Counter {user.assigned_counter})
+                            </button>
 
-                        {/* Call Next (Disabled if Paused) */}
-                        <button
-                          onClick={callNext}
-                          disabled={selectedOffice.state !== 'LIVE' || (selectedOfficeData?.tokens || []).filter(t => t.status === 'CALLED').length >= (selectedOffice.counter_count || 1)}
-                          className="btn btn-primary"
-                          style={{ opacity: selectedOffice.state !== 'LIVE' ? 0.5 : 1 }}
-                        >
-                          Call Next
-                        </button>
-
-                        {/* Pause / Resume Button */}
-                        {selectedOffice.state === 'LIVE' ? (
-                          <button onClick={() => setIsPauseModalOpen(true)} className="btn btn-secondary" style={{ borderColor: '#fcd34d', background: '#fffbeb', color: '#92400e' }}>
-                            Pause
-                          </button>
+                            {/* Pause / Resume Button */}
+                            {selectedOffice.state === 'LIVE' ? (
+                              <button onClick={() => setIsPauseModalOpen(true)} className="btn btn-secondary" style={{ borderColor: '#fcd34d', background: '#fffbeb', color: '#92400e' }}>
+                                Pause
+                              </button>
+                            ) : (
+                              <button onClick={handleResume} className="btn btn-primary" style={{ background: '#16a34a', borderColor: '#16a34a' }}>
+                                Resume Operations
+                              </button>
+                            )}
+                          </>
                         ) : (
-                          <button onClick={handleResume} className="btn btn-primary" style={{ background: '#16a34a', borderColor: '#16a34a' }}>
-                            Resume Operations
-                          </button>
+                          <div style={{ padding: '12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px', color: '#92400e', width: '100%' }}>
+                            <strong>Spectator Mode:</strong> All counters are currently busy. You will be automatically promoted when a counter becomes free.
+                          </div>
                         )}
                       </div>
                     </div>
 
                     {/* Counter Grid */}
                     <div style={{ marginTop: '24px' }}>
-                      <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Counters</h4>
+                      <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Active Counters</h4>
                       <div className="counter-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
-                        {/* Generate Counter Cards based on Logic N */}
-                        {Array.from({ length: selectedOffice.counter_count || 1 }, (_, i) => i + 1).map(cId => (
-                          <AdminCounterCard
-                            key={cId}
-                            counterId={cId}
-                            tokens={selectedOfficeData?.tokens || []}
-                            onCall={callCounter}
-                            state={selectedOffice.state}
-                          />
-                        ))}
+                        {Array.from({ length: selectedOffice.counter_count || 1 }, (_, i) => i + 1).map(cId => {
+                          const staffMember = counters.find(s => s.role === 'OPERATOR' && s.counter_number === cId);
+                          const isMyCounter = user.operational_role === 'OPERATOR' && user.assigned_counter === cId;
+
+                          return (
+                            <AdminCounterCard
+                              key={cId}
+                              counterId={cId}
+                              tokens={selectedOfficeData?.tokens || []}
+                              onCall={callCounter} // This now maps to specific counter call
+                              state={selectedOffice.state}
+                              adminName={staffMember ? staffMember.name : 'Empty'}
+                              isAssigned={isMyCounter}
+                            />
+                          );
+                        })}
                       </div>
                     </div>
-
                   </section>
                 )}
 

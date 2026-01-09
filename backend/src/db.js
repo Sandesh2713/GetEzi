@@ -183,4 +183,17 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN assigned_counter INTEGER`); } catch
 try { db.exec(`ALTER TABLE tokens ADD COLUMN called_by_counter INTEGER`); } catch (e) { }
 try { db.exec(`ALTER TABLE token_history ADD COLUMN counter_number INTEGER`); } catch (e) { }
 
+// NEW: Active Staff for Session Management
+db.exec(`
+CREATE TABLE IF NOT EXISTS active_staff (
+  user_id TEXT PRIMARY KEY,
+  office_id TEXT NOT NULL,
+  role TEXT NOT NULL, -- 'OPERATOR' or 'SPECTATOR'
+  counter_number INTEGER,
+  login_time TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (office_id) REFERENCES offices(id)
+);
+`);
+
 module.exports = db;

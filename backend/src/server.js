@@ -242,6 +242,66 @@ const historyStmt = {
 
 
 /* --- Helpers (Restored) --- */
+
+const activeStaffStmt = {
+  getForOffice: db.prepare(`SELECT * FROM active_staff WHERE office_id = ? ORDER BY role, counter_number`),
+  getByUser: db.prepare(`SELECT * FROM active_staff WHERE user_id = ?`),
+  insert: db.prepare(`INSERT OR REPLACE INTO active_staff (user_id, office_id, role, counter_number, login_time) VALUES (@user_id, @office_id, @role, @counter_number, @login_time)`),
+  delete: db.prepare(`DELETE FROM active_staff WHERE user_id = ?`),
+  countOperators: db.prepare(`SELECT COUNT(*) as count FROM active_staff WHERE office_id = ? AND role = 'OPERATOR'`),
+  getOldestSpectator: db.prepare(`SELECT * FROM active_staff WHERE office_id = ? AND role = 'SPECTATOR' ORDER BY login_time ASC LIMIT 1`),
+  updateRole: db.prepare(`UPDATE active_staff SET role = 'OPERATOR', counter_number = ? WHERE user_id = ?`)
+};
+
+const assignStaffRole = (officeId, userId, maxCounters) => {
+  // 1. Count active operators
+  const count = activeStaffStmt.countOperators.get(officeId).count;
+
+  // 2. Determine Role
+  if (count < maxCounters) {
+    // Find first available counter number (1..N)
+    // We need to know WHICH numbers are taken.
+    const operators = activeStaffStmt.getForOffice.all(officeId).filter(s => s.role === 'OPERATOR');
+    const taken = new Set(operators.map(s => s.counter_number));
+    let counterNum = 1;
+    while (taken.has(counterNum)) counterNum++;
+
+    return { role: 'OPERATOR', counter_number: counterNum };
+  } else {
+    // Full -> Spectator
+    return { role: 'SPECTATOR', counter_number: null };
+  }
+};
+
+const releaseStaff = (userId) => {
+  // 1. Get current staff info
+  const staff = activeStaffStmt.getByUser.get(userId);
+  if (!staff) return null;
+
+  // 2. Remove
+  activeStaffStmt.delete.run(userId);
+
+  // 3. Promotion Logic
+  let promotedUser = null;
+  if (staff.role === 'OPERATOR') {
+    // We freed up a spot (specifically staff.counter_number)
+    // Find oldest spectator
+    const spectator = activeStaffStmt.getOldestSpectator.get(staff.office_id);
+    if (spectator) {
+      activeStaffStmt.updateRole.run(staff.counter_number, spectator.user_id);
+      promotedUser = {
+        userId: spectator.user_id,
+        newRole: 'OPERATOR',
+        counterNumber: staff.counter_number
+      };
+    }
+  }
+  return {
+    officeId: staff.office_id,
+    promotedUser
+  };
+};
+
 const enrichTokens = (tokens) => {
   const now = Date.now();
   return tokens.map(t => {
@@ -301,7 +361,8 @@ const recalculateQueue = (officeId) => {
 
         const now = toIso();
         // Demote Bad Token
-        tokensStmt.setPrediction.run({ id: badToken.id, score: score, status: 'SWAPPED_WAIT' }); // Preserve score
+        // Demote Bad Token
+        tokensStmt.updatePrediction.run({ id: badToken.id, score: score, status: 'SWAPPED_WAIT', expected_time: null }); // Preserve score
         tokensStmt.updateStatus.run({
           id: badToken.id,
           status: 'WAIT',
@@ -377,7 +438,9 @@ const recalculateQueue = (officeId) => {
             called_at: null,
             completed_at: toIso(),
             now: toIso(),
-            eta: null
+            eta: null,
+            assigned_counter: token.assigned_counter || null,
+            called_by_counter: token.called_by_counter || null
           });
           // Notify
           const office = officesStmt.getById.get(officeId);
@@ -439,7 +502,9 @@ const recalculateQueue = (officeId) => {
         completed_at: null,
         now: now,
         eta: null,
-        assigned_counter: bestCounter // ASSIGN HERE
+        eta: null,
+        assigned_counter: bestCounter, // ASSIGN HERE
+        called_by_counter: null
       });
       token.status = 'ALLOCATED';
       token.allocation_time = now;
@@ -518,14 +583,24 @@ const recalculateQueue = (officeId) => {
       called_at: token.called_at,
       completed_at: null,
       eta: waitMinutes,
-      now: toIso()
+      now: toIso(),
+      assigned_counter: token.assigned_counter || null,
+      called_by_counter: token.called_by_counter || null
     });
+  });
+
+  // Fetch & Enrich Active Staff
+  const staffRaw = activeStaffStmt.getForOffice.all(officeId);
+  const active_staff = staffRaw.map(s => {
+    const u = usersStmt.getById.get(s.user_id);
+    return { ...s, name: u ? u.name : 'Unknown' };
   });
 
   // Emit Global Update
   io.to(`office_${officeId}`).emit('queue_update', {
     officeId,
     tokens: enrichTokens(tokensStmt.getForOffice.all(officeId)),
+    active_staff, // Send to frontend
     stats: {
       wait: waitTokens.length,
       allocated: allocatedTokens.length,
@@ -664,95 +739,116 @@ app.post('/api/offices/:id/book', (req, res) => {
 
 
 // Call Specific Counter
-app.post('/api/offices/:id/counters/:counterId/call', (req, res) => {
+app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, res) => {
   const { id, counterId } = req.params;
   const cNum = parseInt(counterId);
-  const office = ensureOffice(id);
 
-  if (office.state && office.state !== 'LIVE') {
-    return res.status(400).json({ error: `Office is currently ${office.state}. Resume to call next.` });
-  }
-
-  recalculateQueue(id); // Ensure state
-  const allTokens = tokensStmt.getForOffice.all(id);
-
-  // 1. Check if this counter is already busy?
-  // Current logic allows multiple "CALLED" tokens presumably if we have multiple counters.
-  // But strict check: Is *this* counter already calling someone?
-  const busyToken = allTokens.find(t => t.status === 'CALLED' && t.called_by_counter === cNum);
-  if (busyToken && !req.body.force) {
-    return res.status(400).json({ error: `Counter ${cNum} is already serving Token #${busyToken.token_number}. Complete it first.` });
-  }
-
-  // 2. Find Next For THIS Counter
-  // Priority: 
-  //   A. Allocated & Assigned to this Counter (Arrived > likely > others)
-  //   B. Global Fallback? (Maybe if this counter is empty but others are overloaded? 
-  //      For now, strict assignment. Admin can manually drag/drop in future, but here we stick to assignment)
-
-  const allocated = allTokens.filter(t => t.status === 'ALLOCATED');
-
-  // Filter for THIS counter
-  // Note: Old tokens might have assigned_counter = NULL. 
-  // We can treat NULL as "Assignable to User 1" or handle gracefully.
-  // Let's assume re-distribution happens or we pick only matching.
-  let candidates = allocated.filter(t => t.assigned_counter === cNum);
-
-  if (candidates.length === 0) {
-    // Fallback: Pick from Global Pool if any unassigned exists (Legacy support)
-    // Or if we want to "steal" from biggest queue? (Auto-balancing)
-    // Requirement says: "Auto-swap them" if no-show.
-    // For now: Just pick unassigned if any.
-    const unassigned = allocated.filter(t => !t.assigned_counter);
-    if (unassigned.length > 0) {
-      candidates = unassigned;
+  try {
+    const office = ensureOffice(id);
+    if (office.state && office.state !== 'LIVE') {
+      return res.status(400).json({ error: `Office is currently ${office.state}. Resume to call next.` });
     }
-  }
 
-  let nextToken = null;
-  if (candidates.length > 0) {
-    // Sort logic
-    const arrived = candidates.filter(t => t.presence_status === 'ARRIVED');
-    if (arrived.length > 0) {
-      nextToken = arrived[0]; // FIFO
-    } else {
-      // Sort by arrival score
-      candidates.sort((a, b) => (b.arrival_score || 0) - (a.arrival_score || 0));
-      nextToken = candidates[0];
+    try {
+      recalculateQueue(id); // Ensure state
+    } catch (e) {
+      console.error("Recalculate Error:", e);
+      return res.status(500).json({ error: 'Queue Calculation Failed: ' + e.message });
     }
+
+    const allTokens = tokensStmt.getForOffice.all(id);
+
+    // SECURITY: Strict Operator Check
+    const staff = activeStaffStmt.getByUser.get(req.user.id);
+    if (!staff || staff.role !== 'OPERATOR') {
+      return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+    }
+
+    if (staff.counter_number !== cNum) {
+      return res.status(403).json({ error: `You are assigned to Counter ${staff.counter_number}, not ${cNum}.` });
+    }
+
+    const busyToken = allTokens.find(t => t.status === 'CALLED' && t.called_by_counter === cNum);
+    if (busyToken && !req.body.force) {
+      return res.status(400).json({ error: `Counter ${cNum} is already serving Token #${busyToken.token_number}. Complete it first.` });
+    }
+
+    // Find Logic
+    const allocated = allTokens.filter(t => t.status === 'ALLOCATED');
+    let candidates = allocated.filter(t => t.assigned_counter === cNum);
+
+    console.log(`Debug Call: cNum=${cNum}, Allocated=${allocated.length}, Candidates(Self)=${candidates.length}`);
+    allocated.forEach(t => console.log(`Token ${t.token_number}: Status=${t.status}, Assigned=${t.assigned_counter}`));
+
+    if (candidates.length === 0) {
+      // Fallback: Pick from Global Pool if any unassigned exists (Legacy support)
+      // Or if we want to "steal" from biggest queue? (Auto-balancing)
+      // Requirement says: "Auto-swap them" if no-show.
+      // For now: Just pick unassigned if any.
+      const unassigned = allocated.filter(t => !t.assigned_counter);
+      if (unassigned.length > 0) {
+        console.log(`Debug Call: Picked ${unassigned.length} unassigned tokens.`);
+        candidates = unassigned;
+      } else {
+        // Debug: Check WAIT tokens?
+        const wait = allTokens.filter(t => t.status === 'WAIT');
+        console.log(`Debug Call: No candidates. WAIT tokens count: ${wait.length}`);
+      }
+    }
+
+    let nextToken = null;
+    if (candidates.length > 0) {
+      const arrived = candidates.filter(t => t.presence_status === 'ARRIVED');
+      if (arrived.length > 0) nextToken = arrived[0];
+      else {
+        candidates.sort((a, b) => (b.arrival_score || 0) - (a.arrival_score || 0));
+        nextToken = candidates[0];
+      }
+    }
+
+    if (!nextToken) {
+      return res.status(404).json({ error: `No tokens waiting for Counter ${cNum}.` });
+    }
+
+    const now = toIso();
+    try {
+      db.transaction(() => {
+        tokensStmt.updateStatus.run({
+          id: nextToken.id,
+          status: 'CALLED',
+          called_at: now,
+          completed_at: null,
+          allocation_time: nextToken.allocation_time,
+          service_start_time: now,
+          expected_completion_time: null,
+          now,
+          eta: 0,
+          assigned_counter: cNum,
+          called_by_counter: cNum
+        });
+      })();
+    } catch (e) {
+      console.error("DB Update Error:", e);
+      return res.status(500).json({ error: 'Database Update Failed: ' + e.message });
+    }
+
+    try {
+      recalculateQueue(id);
+    } catch (e) { console.error("Post-Recalc Error:", e); /* Non-fatal? */ }
+
+    if (nextToken.user_id) {
+      try {
+        io.to(`user_${nextToken.user_id}`).emit('notification', {
+          message: `Token ${nextToken.token_number}: Please go to Counter ${cNum}!`
+        });
+      } catch (e) { }
+    }
+
+    res.json(nextToken);
+  } catch (err) {
+    console.error('Call Endpoint Fatal Error:', err);
+    res.status(500).json({ error: 'System Error: ' + String(err.message) });
   }
-
-  if (!nextToken) {
-    return res.status(404).json({ error: `No tokens waiting for Counter ${cNum}.` });
-  }
-
-  const now = toIso();
-  db.transaction(() => {
-    tokensStmt.updateStatus.run({
-      id: nextToken.id,
-      status: 'CALLED',
-      called_at: now,
-      completed_at: null,
-      allocation_time: nextToken.allocation_time,
-      service_start_time: now,
-      expected_completion_time: null, // Could calc based on avg service
-      now,
-      eta: 0,
-      assigned_counter: cNum, // Ensure it's assigned
-      called_by_counter: cNum
-    });
-  })();
-
-  recalculateQueue(id);
-
-  // Notify
-  if (nextToken.user_id) {
-    io.to(`user_${nextToken.user_id}`).emit('notification', {
-      message: `Token ${nextToken.token_number}: Please go to Counter ${cNum}!`
-    });
-  }
-
-  res.json(nextToken);
 });
 
 // Original Call Next (Router / Legacy / Smart Auto)
@@ -766,9 +862,21 @@ app.post('/api/offices/:id/call-next', (req, res) => {
 // Complete (Updated to clear counter)
 
 // Complete
-app.post('/api/tokens/:id/complete', (req, res) => {
+// Complete
+app.post('/api/tokens/:id/complete', authenticateToken, (req, res) => {
   const token = tokensStmt.getById.get(req.params.id);
   if (!token) return res.status(404).json({ error: 'Not found' });
+
+  // SECURITY: Strict Operator Check
+  // Allow if user is owner OR if admin operator
+  if (req.user.role === 'admin') {
+    const staff = activeStaffStmt.getByUser.get(req.user.id);
+    if (!staff || staff.role !== 'OPERATOR') {
+      return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+    }
+    // Optional: Check if token was called by this counter?
+    // For now, allow any operator to complete/cancel to prevent deadlocks.
+  }
 
   db.transaction(() => {
     tokensStmt.updateStatus.run({
@@ -780,7 +888,9 @@ app.post('/api/tokens/:id/complete', (req, res) => {
       service_start_time: token.service_start_time,
       expected_completion_time: toIso(),
       now: toIso(),
-      eta: null
+      eta: null,
+      assigned_counter: token.assigned_counter || null,
+      called_by_counter: token.called_by_counter || null
     });
 
     if (token.user_id) {
@@ -906,7 +1016,8 @@ app.post('/api/tokens/:id/arrive', (req, res) => {
 });
 
 // Admin: Config Counters
-app.post('/api/offices/:id/config', (req, res) => {
+// Admin: Config Counters
+app.post('/api/offices/:id/config', authenticateToken, (req, res) => {
   const { id } = req.params;
   const { counterCount } = req.body;
   const N = parseInt(counterCount);
@@ -926,12 +1037,19 @@ app.post('/api/offices/:id/config', (req, res) => {
 });
 
 // Admin: Pause Office
-app.post('/api/offices/:id/pause', (req, res) => {
+// Admin: Pause Office
+app.post('/api/offices/:id/pause', authenticateToken, (req, res) => {
   const { id } = req.params;
   const { reason } = req.body; // 'LUNCH', 'BREAK', 'MAINTENANCE'
 
   const office = officesStmt.getById.get(id);
   if (!office) return res.status(404).json({ error: 'Office not found' });
+
+  // SECURITY: Strict Operator Check
+  const staff = activeStaffStmt.getByUser.get(req.user.id);
+  if (!staff || staff.role !== 'OPERATOR') {
+    return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+  }
 
   const now = toIso();
 
@@ -964,8 +1082,15 @@ app.post('/api/offices/:id/pause', (req, res) => {
 });
 
 // Admin: Resume Office
-app.post('/api/offices/:id/resume', (req, res) => {
+// Admin: Resume Office
+app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
   const { id } = req.params;
+
+  // SECURITY: Strict Operator Check
+  const staff = activeStaffStmt.getByUser.get(req.user.id);
+  if (!staff || staff.role !== 'OPERATOR') {
+    return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+  }
 
   db.transaction(() => {
     officesStmt.updateState.run({
@@ -1006,9 +1131,17 @@ app.get('/api/offices/:id', (req, res) => {
   try {
     const office = ensureOffice(id);
     const tokens = enrichTokens(tokensStmt.getForOffice.all(id));
+
+    // Fetch Active Staff with Names
+    const staffRaw = activeStaffStmt.getForOffice.all(id);
+    const active_staff = staffRaw.map(s => {
+      const u = usersStmt.getById.get(s.user_id);
+      return { ...s, name: u ? u.name : 'Unknown' };
+    });
+
     // Add extra stats expected by frontend
     const queueCount = tokens.filter(t => t.status === 'WAIT' || t.status === 'queued').length;
-    res.json({ office: { ...office, queueCount }, tokens });
+    res.json({ office: { ...office, queueCount }, tokens, active_staff });
   } catch (e) {
     console.error('GET /api/offices/:id Error:', e);
     if (e.message === 'Office not found') {
@@ -1093,12 +1226,26 @@ app.get('/api/auth/me', (req, res) => {
     const decoded = jwt.verify(token, jwtSecret);
     const user = usersStmt.getById.get(decoded.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Fetch Active Staff Role for Admin
+    let operationalRole = user.role;
+    let assignedCounter = null;
+    if (user.role === 'admin') {
+      const activeStaff = activeStaffStmt.getByUser.get(user.id);
+      if (activeStaff) {
+        operationalRole = activeStaff.role;
+        assignedCounter = activeStaff.counter_number;
+      }
+    }
+
     res.json({
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
         role: user.role,
+        operational_role: operationalRole,
+        assigned_counter: assignedCounter,
         is_verified: user.is_verified,
         phone: user.phone,
         dob: user.dob,
@@ -1116,10 +1263,98 @@ app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
   const user = usersStmt.getByEmail.get(email);
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    return res.status(401).json({ error: 'Invalid' });
+    return res.status(401).json({ error: 'Invalid credentials' });
   }
-  const token = jwt.sign({ id: user.id, role: user.role }, jwtSecret);
-  res.json({ token, user: { id: user.id, name: user.name, role: user.role } });
+
+  // Activity
+  usersStmt.updateStats.run({
+    id: user.id,
+    completed_inc: 0,
+    no_show_inc: 0,
+    delay: 0,
+    now: toIso()
+  });
+
+  const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '7d' });
+
+  // --- STAFF LOGIC ---
+  let assignedRole = user.role;
+  let assignedCounter = null;
+
+  if (user.role === 'admin') {
+    const office = officesStmt.getAll.all()[0];
+    if (office) {
+      // Logic: Assign based on availability
+      const existingStaff = activeStaffStmt.getByUser.get(user.id);
+
+      if (existingStaff) {
+        assignedRole = existingStaff.role;
+        assignedCounter = existingStaff.counter_number;
+        // Do NOT update database; keep session alive
+      } else {
+        const result = assignStaffRole(office.id, user.id, office.counter_count || 1);
+        assignedRole = result.role;
+        assignedCounter = result.counter_number;
+
+        // Persist new session
+        activeStaffStmt.insert.run({
+          user_id: user.id,
+          office_id: office.id,
+          role: result.role,
+          counter_number: result.counter_number,
+          login_time: toIso()
+        });
+      }
+
+      // Notify Dashboard of new staff
+      const staffList = activeStaffStmt.getForOffice.all(office.id);
+      io.to(`office_${office.id}`).emit('staff_update', staffList);
+    }
+  }
+
+  res.json({
+    token,
+    user: {
+      ...user,
+      operational_role: assignedRole, // 'OPERATOR' or 'SPECTATOR'
+      assigned_counter: assignedCounter
+    }
+  });
+});
+
+app.post('/api/auth/logout', authenticateToken, (req, res) => {
+  // Release Staff
+  if (req.user.role === 'admin') {
+    const result = releaseStaff(req.user.id);
+    if (result && result.officeId) {
+      // Refresh Dashboard for everyone
+      const staffList = activeStaffStmt.getForOffice.all(result.officeId);
+      io.to(`office_${result.officeId}`).emit('staff_update', staffList);
+
+      // Recalculate queue (capacity changed)
+      recalculateQueue(result.officeId);
+
+      // Notify promoted user
+      if (result.promotedUser) {
+        io.to(`user_${result.promotedUser.userId}`).emit('role_update', {
+          role: 'OPERATOR',
+          counter_number: result.promotedUser.counterNumber
+        });
+      }
+    }
+  }
+  res.json({ success: true });
+});
+
+// Get Active Staff (For Dashboard)
+app.get('/api/offices/:id/staff', (req, res) => {
+  const staff = activeStaffStmt.getForOffice.all(req.params.id);
+  // Enrich with names
+  const fullStaff = staff.map(s => {
+    const u = usersStmt.getById.get(s.user_id);
+    return { ...s, name: u ? u.name : 'Unknown' };
+  });
+  res.json({ staff: fullStaff });
 });
 
 app.post('/api/auth/register', (req, res) => {
