@@ -160,6 +160,11 @@ function CustomerTokenRow({ token, onCancel, onArrive, isOwner, office }) {
           <div style={{ fontWeight: 600, fontSize: '1.1rem' }}>{token.user_name}</div>
           <div style={{ marginTop: '4px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span className="badge badge-neutral">{statusMsg}</span>
+            {(token.assigned_counter || token.called_by_counter) && (
+              <span className="badge badge-primary">
+                Counter {token.called_by_counter || token.assigned_counter}
+              </span>
+            )}
           </div>
           <div style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '6px' }}>{subMsg}</div>
         </div>
@@ -211,10 +216,15 @@ function AdminTokenRow({ token, onComplete, onNoShow, onCancel, onReQueue, onSel
           <span style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--primary-600)' }}>#{token.token_number}</span>
           <span style={{ fontSize: '1rem', fontWeight: 600 }}>{token.user_name}</span>
         </div>
-        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '8px', flexWrap: 'wrap' }}>
           <span className="badge" style={{ backgroundColor: getStatusColor(token.status), color: '#374151' }}>
             {token.status}
           </span>
+          {(token.assigned_counter || token.called_by_counter) && (
+            <span className="badge" style={{ backgroundColor: '#e0e7ff', color: '#3730a3' }}>
+              Counter {token.called_by_counter || token.assigned_counter}
+            </span>
+          )}
           <span className="badge" style={{ backgroundColor: isArrived ? '#dcfce7' : '#fee2e2', color: isArrived ? '#166534' : '#991b1b' }}>
             {isArrived ? 'Arrived' : 'Not Arrived'}
           </span>
@@ -280,6 +290,7 @@ function TokenDetailsModal({ token, onClose, onAction }) {
           <h4 style={{ fontSize: '12px', textTransform: 'uppercase', color: '#9ca3af', marginBottom: '8px' }}>System Data</h4>
           <InfoRow label="Status" val={token.status} />
           <InfoRow label="Presence" val={token.presence_status} />
+          <InfoRow label="Counter" val={token.called_by_counter || token.assigned_counter || 'Unassigned'} />
           <InfoRow label="Created At" val={token.created_at ? new Date(token.created_at).toLocaleString() : ''} />
           <InfoRow label="Allocation Time" val={token.eligibility_time ? new Date(token.eligibility_time).toLocaleString() : ''} />
           <InfoRow label="Service Start" val={token.service_start_time ? new Date(token.service_start_time).toLocaleString() : ''} />
@@ -296,6 +307,58 @@ function TokenDetailsModal({ token, onClose, onAction }) {
   );
 }
 
+
+// --- 3.5 Counter Card (Admin) ---
+function AdminCounterCard({ counterId, tokens, onCall, state }) {
+  const activeToken = tokens.find(t => t.status === 'CALLED' && t.called_by_counter === counterId);
+  // Next allocated tokens assigned to this counter
+  const assignedTokens = tokens.filter(t => t.status === 'ALLOCATED' && t.assigned_counter === counterId)
+    .sort((a, b) => new Date(a.allocation_time) - new Date(b.allocation_time));
+
+  return (
+    <div className="card" style={{ padding: '16px', background: 'var(--gray-50)', border: '1px solid var(--gray-200)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+        <h4 style={{ margin: 0 }}>Counter {counterId}</h4>
+        <span className={`badge ${activeToken ? 'badge-primary' : 'badge-neutral'}`}>
+          {activeToken ? 'Busy' : 'Idle'}
+        </span>
+      </div>
+
+      <div style={{ marginBottom: '16px', minHeight: '60px', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'white', borderRadius: '8px', border: '1px dashed var(--gray-300)' }}>
+        {activeToken ? (
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--primary-600)' }}>#{activeToken.token_number}</div>
+            <div style={{ fontSize: '0.85rem' }}>{activeToken.user_name}</div>
+          </div>
+        ) : (
+          <span className="text-muted">No Active Token</span>
+        )}
+      </div>
+
+      <button
+        className="btn btn-primary"
+        style={{ width: '100%', marginBottom: '16px' }}
+        onClick={() => onCall(counterId)}
+        disabled={!!activeToken || state !== 'LIVE'}
+      >
+        Call Next
+      </button>
+
+      <div>
+        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: '8px', fontWeight: 600 }}>Up Next ({assignedTokens.length})</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '150px', overflowY: 'auto' }}>
+          {assignedTokens.length === 0 && <div style={{ fontSize: '0.85rem', color: '#9ca3af', fontStyle: 'italic' }}>Queue empty</div>}
+          {assignedTokens.map(t => (
+            <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px', background: 'white', borderRadius: '4px', border: '1px solid #e5e7eb', fontSize: '0.85rem' }}>
+              <span style={{ fontWeight: 600 }}>#{t.token_number}</span>
+              <span>{t.presence_status === 'ARRIVED' ? '🟢' : '⚪️'}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function LoginView({ onSuccess, onSwitch, onBack, role }) {
   const { login } = useAuth();
@@ -2115,10 +2178,23 @@ function App() {
         'cancel': 'cancelled',
         'complete': 'completed',
         'no-show': 'marked as no-show',
-        're-queue': 're-queued'
+        're-queue': 're-queued',
+        'arrive': 'marked as arrived'
       };
 
       setMessage(`Token ${verbs[action] || action}`);
+      fetchOfficeDetail(selectedOfficeId);
+    } catch (err) { setMessage(err.message); }
+  };
+
+  const callCounter = async (counterId) => {
+    if (!adminKey) return setMessage('Admin key required');
+    try {
+      const data = await fetchJSON(`/api/offices/${selectedOfficeId}/counters/${counterId}/call`, {
+        method: 'POST',
+        headers: { 'x-admin-key': adminKey },
+      });
+      setMessage(`Counter ${counterId} Called ${data.user_name}`);
       fetchOfficeDetail(selectedOfficeId);
     } catch (err) { setMessage(err.message); }
   };
@@ -2507,6 +2583,23 @@ function App() {
                       </div>
                     </div>
 
+                    {/* Counter Grid */}
+                    <div style={{ marginTop: '24px' }}>
+                      <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Counters</h4>
+                      <div className="counter-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
+                        {/* Generate Counter Cards based on Logic N */}
+                        {Array.from({ length: selectedOffice.counter_count || 1 }, (_, i) => i + 1).map(cId => (
+                          <AdminCounterCard
+                            key={cId}
+                            counterId={cId}
+                            tokens={selectedOfficeData?.tokens || []}
+                            onCall={callCounter}
+                            state={selectedOffice.state}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
                   </section>
                 )}
 
@@ -2603,7 +2696,8 @@ function App() {
             )}
           </main>
         </div>
-      )}
+      )
+      }
 
       {/* Pause Modal */}
       <PauseModal
@@ -2612,9 +2706,8 @@ function App() {
         onPause={handlePause}
       />
 
-    </div>
+    </div >
   );
 }
 
 export default App;
-

@@ -189,7 +189,9 @@ const tokensStmt = {
       last_updated_at = @now,
       called_at = COALESCE(@called_at, called_at),
       completed_at = COALESCE(@completed_at, completed_at),
-      eta_minutes = @eta
+      eta_minutes = @eta,
+      assigned_counter = COALESCE(@assigned_counter, assigned_counter),
+      called_by_counter = COALESCE(@called_by_counter, called_by_counter)
     WHERE id = @id
   `),
   getMaxTokenNum: db.prepare(`SELECT COALESCE(MAX(token_number), 0) as maxNum FROM tokens WHERE office_id = ?`),
@@ -226,8 +228,8 @@ tokensStmt.updatePrediction = db.prepare(`
 
 const historyStmt = {
   archive: db.prepare(`
-    INSERT INTO token_history (id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, archived_at, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time)
-    SELECT id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, @archivedAt, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time
+    INSERT INTO token_history (id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, archived_at, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time, counter_number)
+    SELECT id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, @archivedAt, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time, called_by_counter
     FROM tokens
   `),
   deleteArchivedTokens: db.prepare(`DELETE FROM tokens`), // Wipes active tokens table
@@ -282,6 +284,66 @@ const recalculateQueue = (officeId) => {
   const calledTokens = activeTokens.filter(t => t.status === 'CALLED');
   let allocatedTokens = activeTokens.filter(t => t.status === 'ALLOCATED');
   let waitTokens = activeTokens.filter(t => t.status === 'WAIT');
+
+  // --- 1.2 Auto-Swap for Optimization ---
+  // If an ALLOCATED token is PROBABLE_NO_SHOW, and we have a WAIT token that is ARRIVED, swap them.
+  // This ensures counters are fed with confirmed content.
+  allocatedTokens.forEach(badToken => {
+    if (badToken.presence_status === 'ARRIVED') return; // Safe
+    const score = calculateArrivalScore(badToken); // Reuse calculation or store on token
+    if (score < 0.25) {
+      // Look for a candidate
+      const candidateIdx = waitTokens.findIndex(t => t.presence_status === 'ARRIVED');
+      if (candidateIdx >= 0) {
+        const goodToken = waitTokens[candidateIdx];
+
+        console.log(`Auto-Swapping Token ${badToken.token_number} (Lazy) with ${goodToken.token_number} (Arrived)`);
+
+        const now = toIso();
+        // Demote Bad Token
+        tokensStmt.setPrediction.run({ id: badToken.id, score: score, status: 'SWAPPED_WAIT' }); // Preserve score
+        tokensStmt.updateStatus.run({
+          id: badToken.id,
+          status: 'WAIT',
+          allocation_time: null,
+          service_start_time: null,
+          expected_completion_time: null,
+          called_at: null,
+          completed_at: null,
+          now: now,
+          eta: null,
+          assigned_counter: null,
+          called_by_counter: null
+        });
+
+        // Promote Good Token
+        tokensStmt.updateStatus.run({
+          id: goodToken.id,
+          status: 'ALLOCATED',
+          allocation_time: now, // Give it fresh start
+          service_start_time: null,
+          expected_completion_time: null,
+          called_at: null,
+          completed_at: null,
+          now: now,
+          eta: null,
+          assigned_counter: badToken.assigned_counter, // Inherit specific counter!
+          called_by_counter: null
+        });
+
+        // Update local lists for rest of function to be semi-accurate (though function will likely re-run soon)
+        waitTokens.splice(candidateIdx, 1);
+        // Actually, since we modified DB, maybe safer to return and let next trigger handle?
+        // But to be safe, we just mark badToken as processed to avoid double swap in same loop?
+        // For simplicity, we assume one swap per tick is fine or splice.
+      }
+    }
+  });
+
+  // Re-fetch to be safe after swaps
+  const freshTokens = tokensStmt.getForOffice.all(officeId);
+  allocatedTokens = freshTokens.filter(t => t.status === 'ALLOCATED');
+  waitTokens = freshTokens.filter(t => t.status === 'WAIT');
 
   // --- 1.5 Grace Period Logic (Auto No-Show) ---
   if (allocatedTokens.length > 0) {
@@ -338,7 +400,34 @@ const recalculateQueue = (officeId) => {
 
   if (slotsOpen > 0 && waitTokens.length > 0) {
     const toPromote = waitTokens.slice(0, slotsOpen);
+
+    // --- SMART ASSIGNMENT LOGIC ---
+    // Count load per counter (1..N)
+    // Load = Count(Allocated tokens assigned to counter X)
+    const counterLoad = {};
+    for (let c = 1; c <= N; c++) counterLoad[c] = 0;
+
+    allocatedTokens.forEach(t => {
+      if (t.assigned_counter && t.assigned_counter <= N) {
+        counterLoad[t.assigned_counter]++;
+      }
+    });
+
     toPromote.forEach(token => {
+      // Find counter with min load
+      let bestCounter = 1;
+      let minLoad = Infinity;
+
+      for (let c = 1; c <= N; c++) {
+        if (counterLoad[c] < minLoad) {
+          minLoad = counterLoad[c];
+          bestCounter = c;
+        }
+      }
+
+      // Increment load for next iteration
+      counterLoad[bestCounter]++;
+
       const now = toIso();
       tokensStmt.updateStatus.run({
         id: token.id,
@@ -349,12 +438,15 @@ const recalculateQueue = (officeId) => {
         called_at: null,
         completed_at: null,
         now: now,
-        eta: null
+        eta: null,
+        assigned_counter: bestCounter // ASSIGN HERE
       });
       token.status = 'ALLOCATED';
       token.allocation_time = now;
+      token.assigned_counter = bestCounter; // Update local obj for immediate use
+
       if (token.user_id) {
-        io.to(`user_${token.user_id}`).emit('notification', { message: "You have been allocated! Please proceed to the office." });
+        io.to(`user_${token.user_id}`).emit('notification', { message: `allocated-counter-${bestCounter}` });
       }
 
       // Email Notification: Travel Instruction
@@ -570,89 +662,71 @@ app.post('/api/offices/:id/book', (req, res) => {
   }
 });
 
-// Call Next
-app.post('/api/offices/:id/call-next', (req, res) => {
-  const { id } = req.params;
+
+// Call Specific Counter
+app.post('/api/offices/:id/counters/:counterId/call', (req, res) => {
+  const { id, counterId } = req.params;
+  const cNum = parseInt(counterId);
   const office = ensureOffice(id);
 
   if (office.state && office.state !== 'LIVE') {
     return res.status(400).json({ error: `Office is currently ${office.state}. Resume to call next.` });
   }
 
-  // Logic: 
-  // 1. Check Safety Lock: Count(CALLED) < N
-  const all = tokensStmt.getForOffice.all(id);
-  const calledCount = all.filter(t => t.status === 'CALLED').length;
-  const N = office.counter_count || 1;
-  const adminForce = req.body.force === true; // escape hatch
+  recalculateQueue(id); // Ensure state
+  const allTokens = tokensStmt.getForOffice.all(id);
 
-  if (calledCount >= N && !adminForce) {
-    return res.status(400).json({ error: `Cannot call next. All ${N} counters are active. Complete a user first.` });
+  // 1. Check if this counter is already busy?
+  // Current logic allows multiple "CALLED" tokens presumably if we have multiple counters.
+  // But strict check: Is *this* counter already calling someone?
+  const busyToken = allTokens.find(t => t.status === 'CALLED' && t.called_by_counter === cNum);
+  if (busyToken && !req.body.force) {
+    return res.status(400).json({ error: `Counter ${cNum} is already serving Token #${busyToken.token_number}. Complete it first.` });
   }
 
-  // 2. Pick Next from ALLOCATED (Prioritized)
-  // Logic: 
-  // A. Priority to 'ARRIVED' users (FIFO among them)
-  // B. Then Sort by 'arrival_score' DESC (Likely to arrive first)
+  // 2. Find Next For THIS Counter
+  // Priority: 
+  //   A. Allocated & Assigned to this Counter (Arrived > likely > others)
+  //   B. Global Fallback? (Maybe if this counter is empty but others are overloaded? 
+  //      For now, strict assignment. Admin can manually drag/drop in future, but here we stick to assignment)
 
-  recalculateQueue(id); // Ensure fresh state
+  const allocated = allTokens.filter(t => t.status === 'ALLOCATED');
 
-  // Re-fetch
-  const freshAll = tokensStmt.getForOffice.all(id);
-  let allocated = freshAll.filter(t => t.status === 'ALLOCATED');
+  // Filter for THIS counter
+  // Note: Old tokens might have assigned_counter = NULL. 
+  // We can treat NULL as "Assignable to User 1" or handle gracefully.
+  // Let's assume re-distribution happens or we pick only matching.
+  let candidates = allocated.filter(t => t.assigned_counter === cNum);
+
+  if (candidates.length === 0) {
+    // Fallback: Pick from Global Pool if any unassigned exists (Legacy support)
+    // Or if we want to "steal" from biggest queue? (Auto-balancing)
+    // Requirement says: "Auto-swap them" if no-show.
+    // For now: Just pick unassigned if any.
+    const unassigned = allocated.filter(t => !t.assigned_counter);
+    if (unassigned.length > 0) {
+      candidates = unassigned;
+    }
+  }
 
   let nextToken = null;
-
-  if (allocated.length > 0) {
-    const arrived = allocated.filter(t => t.presence_status === 'ARRIVED');
+  if (candidates.length > 0) {
+    // Sort logic
+    const arrived = candidates.filter(t => t.presence_status === 'ARRIVED');
     if (arrived.length > 0) {
-      nextToken = arrived[0]; // FIFO among arrived
+      nextToken = arrived[0]; // FIFO
     } else {
-      // Sort by score
-      allocated.sort((a, b) => (b.arrival_score || 0) - (a.arrival_score || 0));
-      nextToken = allocated[0];
-    }
-  } else {
-    // Fallback: Check WAIT list
-    const wait = freshAll.filter(t => t.status === 'WAIT');
-    if (wait.length > 0) {
-      nextToken = wait[0];
-    } else {
-      return res.status(404).json({ error: 'No users in queue.' });
+      // Sort by arrival score
+      candidates.sort((a, b) => (b.arrival_score || 0) - (a.arrival_score || 0));
+      nextToken = candidates[0];
     }
   }
 
-  // Guard: Presence Check (Relaxed for Likely ones? No, standard flow still applies)
-  // If we picked a high-score person who hasn't Arrived, do we block?
-  // The system says: "Pick the ALLOCATED token with... highest score".
-  // But if presence is mandatory for `CALLED` status transition, then we can't call them yet?
-  // User Prompt: "Prevent unreliable users from blocking the queue".
-  // If we pick highest score, and they aren't here... we might be blocked if we enforce presence.
-  // HOWEVER, steps say: "Pick ... highest arrival_score".
-  // If we enforce line 561 (Guard: Presence Check), then we fail.
-  // We should likely ALLOW calling them if score is high enough? 
-  // OR, the Guard is only if we want stricter control.
-  // Let's keep the Guard but maybe we should only pick if they are close?
-  // Actually, if we pick them and they are not arrived, we throw "Customer has not confirmed arrival yet".
-  // Then the admin sees "Error".
-  // This implies we should ONLY pick if `arrived` OR we remove the guard.
-  // Let's remove the GUARD if status is 'LIKELY_TO_ARRIVE'?
-  // Or just relax it. The "Smart Call Next" prevents counter idle.
-  // If we pick someone not arrived, we can't serve them.
-  // So the logic must be: Pick highest score... but what if they aren't here?
-  // "This prevents counters sitting idle" -> Implies we can call them.
-  // I will comment out the Strict Presence Check for now, or make it optional?
-  // Let's Assume "Call" means announcing them. If they aren't there, we mark No Show manually or wait.
-  // So I'll remove the strict 400 error return, maybe just warn or allow.
-
-  // Actually, the previous implementation (lines 560-566) BLOCKS calling if not arrived.
-  // If I keep it, "Smart Call Next" fails for non-arrived users.
-  // I will REMOVE the block but keep the warning in the returned object or logs?
-  // Better: I will Remove the block.
-
+  if (!nextToken) {
+    return res.status(404).json({ error: `No tokens waiting for Counter ${cNum}.` });
+  }
 
   const now = toIso();
-
   db.transaction(() => {
     tokensStmt.updateStatus.run({
       id: nextToken.id,
@@ -661,23 +735,36 @@ app.post('/api/offices/:id/call-next', (req, res) => {
       completed_at: null,
       allocation_time: nextToken.allocation_time,
       service_start_time: now,
-      expected_completion_time: null,
+      expected_completion_time: null, // Could calc based on avg service
       now,
-      eta: 0 // Arrived
+      eta: 0,
+      assigned_counter: cNum, // Ensure it's assigned
+      called_by_counter: cNum
     });
   })();
 
-  recalculateQueue(id); // Update for everyone else
+  recalculateQueue(id);
 
   // Notify
   if (nextToken.user_id) {
-    io.to(`user_${nextToken.user_id}`).emit('notification', { message: "It's your turn! Please go to the counter." });
+    io.to(`user_${nextToken.user_id}`).emit('notification', {
+      message: `Token ${nextToken.token_number}: Please go to Counter ${cNum}!`
+    });
   }
 
   res.json(nextToken);
 });
 
-// Complete
+// Original Call Next (Router / Legacy / Smart Auto)
+app.post('/api/offices/:id/call-next', (req, res) => {
+  // If user calls this, we try to determine "Best Counter" to call for?
+  // Or just 404 saying "Use specific counter call".
+  // Let's auto-pick the first available counter?
+  return res.status(400).json({ error: "Please use specific counter call button." });
+});
+
+// Complete (Updated to clear counter)
+
 // Complete
 app.post('/api/tokens/:id/complete', (req, res) => {
   const token = tokensStmt.getById.get(req.params.id);

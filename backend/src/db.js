@@ -78,6 +78,8 @@ CREATE TABLE IF NOT EXISTS tokens (
   arrival_score REAL,
   arrival_status TEXT,
   expected_arrival_time TEXT,
+  assigned_counter INTEGER,
+  called_by_counter INTEGER,
   FOREIGN KEY (office_id) REFERENCES offices(id),
   FOREIGN KEY (user_id) REFERENCES users(id)
 );
@@ -117,6 +119,7 @@ CREATE TABLE IF NOT EXISTS token_history (
   note TEXT,
   created_at TEXT NOT NULL,
   called_at TEXT,
+  counter_number INTEGER,
   completed_at TEXT,
   service_type TEXT,
   archived_at TEXT NOT NULL,
@@ -174,5 +177,10 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN expected_arrival_time TEXT`); } cat
 // Office Pause Schema
 try { db.exec(`ALTER TABLE offices ADD COLUMN state TEXT DEFAULT 'LIVE'`); } catch (e) { }
 try { db.exec(`ALTER TABLE offices ADD COLUMN pause_started_at TEXT`); } catch (e) { }
+
+// Counter Support Schema
+try { db.exec(`ALTER TABLE tokens ADD COLUMN assigned_counter INTEGER`); } catch (e) { }
+try { db.exec(`ALTER TABLE tokens ADD COLUMN called_by_counter INTEGER`); } catch (e) { }
+try { db.exec(`ALTER TABLE token_history ADD COLUMN counter_number INTEGER`); } catch (e) { }
 
 module.exports = db;
