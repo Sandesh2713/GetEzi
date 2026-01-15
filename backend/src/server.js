@@ -325,111 +325,124 @@ const activeStaffStmt = {
 
 const countersStmt = {
   // Sync
-  deleteExcess: db.prepare(`DELETE FROM counters WHERE office_id = ? AND counter_number > ?`),
-  insert: db.prepare(`INSERT OR IGNORE INTO counters (office_id, counter_number) VALUES (?, ?)`),
+  deleteAll: db.prepare(`DELETE FROM counters WHERE office_id = ?`),
+  insert: db.prepare(`INSERT INTO counters (office_id, counter_number) VALUES (?, ?)`),
 
   // Claim
   checkOwner: db.prepare(`SELECT * FROM counters WHERE user_id = ?`),
-  findFree: db.prepare(`SELECT id FROM counters WHERE office_id = ? AND user_id IS NULL ORDER BY counter_number ASC LIMIT 1`),
-  claim: db.prepare(`UPDATE counters SET user_id = ? WHERE id = ?`),
+  tryClaim: db.prepare(`
+    UPDATE counters 
+    SET user_id = @userId, last_seen = @now
+    WHERE id = (
+      SELECT id FROM counters 
+      WHERE office_id = @officeId AND user_id IS NULL 
+      ORDER BY counter_number ASC LIMIT 1
+    )
+  `),
+  getCounterByOwner: db.prepare(`SELECT counter_number FROM counters WHERE user_id = ?`),
+
+  // Heartbeat
+  pulse: db.prepare(`UPDATE counters SET last_seen = ? WHERE user_id = ?`),
 
   // Release
-  release: db.prepare(`UPDATE counters SET user_id = NULL WHERE user_id = ?`)
+  release: db.prepare(`UPDATE counters SET user_id = NULL WHERE user_id = ?`),
+
+  // Queries
+  getStale: db.prepare(`SELECT * FROM counters WHERE user_id IS NOT NULL AND last_seen < ?`)
 };
 
 const syncCounters = (officeId, maxCounters) => {
-  // 1. Remove excess (if availability reduced)
-  // Be careful: if a user is assigned to a high counter, they lose it? 
-  // User req doesn't specify, but implies consistency. 
-  // For now we wipe excess.
-  countersStmt.deleteExcess.run(officeId, maxCounters);
-
-  // 2. Add missing
-  for (let c = 1; c <= maxCounters; c++) {
-    countersStmt.insert.run(officeId, c);
-  }
+  try {
+    const txn = db.transaction(() => {
+      countersStmt.deleteAll.run(officeId);
+      for (let c = 1; c <= maxCounters; c++) {
+        countersStmt.insert.run(officeId, c);
+      }
+    });
+    txn();
+  } catch (e) { console.error('SyncCounters Error:', e); }
 };
 
 const assignStaffRole = (officeId, userId, maxCounters) => {
-  // 0. Ensure counters exist
-  syncCounters(officeId, maxCounters);
+  // 0. Ensure counters exist (Idempotent check)
+  const check = db.prepare('SELECT COUNT(*) as count FROM counters WHERE office_id = ?').get(officeId);
+  if (check.count === 0) syncCounters(officeId, maxCounters);
 
-  let assignedRole = 'SPECTATOR';
-  let assignedCounter = null;
+  try {
+    db.prepare('BEGIN IMMEDIATE').run();
 
-  // Transaction for Atomicity
-  const txn = db.transaction(() => {
-    // 1. Check if user already owns a counter (Reconnect/Refresh safety)
+    // 1. Check if user already owns a counter
     const existing = countersStmt.checkOwner.get(userId);
     if (existing) {
-      if (existing.office_id === officeId.toString()) { // Ensure same office
+      if (existing.office_id === officeId.toString()) {
+        countersStmt.pulse.run(Date.now(), userId);
+        db.prepare('COMMIT').run();
         return { role: 'OPERATOR', counter_number: existing.counter_number };
       } else {
-        // User moved office? Release old lock.
         countersStmt.release.run(userId);
       }
     }
 
-    // 2. Try to grab first free counter
-    // "SELECT FOR UPDATE" equivalent in SQLite transaction
-    const free = countersStmt.findFree.get(officeId);
-    if (free) {
-      countersStmt.claim.run(userId, free.id);
-      return { role: 'OPERATOR', counter_number: db.prepare('SELECT counter_number FROM counters WHERE id = ?').get(free.id).counter_number };
+    // 2. Try to claim a free counter
+    const result = countersStmt.tryClaim.run({
+      userId,
+      now: Date.now(),
+      officeId
+    });
+
+    let assignedRole, assignedCounter;
+
+    if (result.changes === 1) {
+      assignedRole = 'OPERATOR';
+      const row = countersStmt.getCounterByOwner.get(userId);
+      assignedCounter = row.counter_number;
+    } else {
+      assignedRole = 'SPECTATOR';
+      assignedCounter = null;
     }
 
-    // 3. Fallback
-    return { role: 'SPECTATOR', counter_number: null };
-  });
+    db.prepare('COMMIT').run();
+    return { role: assignedRole, counter_number: assignedCounter };
 
-  return txn();
+  } catch (e) {
+    try { db.prepare('ROLLBACK').run(); } catch (e2) { }
+    console.error('AssignStaffRole Error:', e);
+    return { role: 'SPECTATOR', counter_number: null };
+  }
 };
 
 const releaseStaff = (userId) => {
-  // 1. Get current staff info for context (before delete)
   const staff = activeStaffStmt.getByUser.get(userId);
   if (!staff) return null;
 
-  // 2. Remove from Active Staff (Session)
-  activeStaffStmt.delete.run(userId);
+  try {
+    db.prepare('BEGIN IMMEDIATE').run();
+    activeStaffStmt.delete.run(userId);
+    countersStmt.release.run(userId);
+    db.prepare('COMMIT').run();
 
-  // 3. Release Counter Lock
-  countersStmt.release.run(userId);
+    let promotedUser = null;
+    const spectator = activeStaffStmt.getOldestSpectator.get(staff.office_id);
+    if (spectator) {
+      const office = officesStmt.getById.get(staff.office_id);
+      const N = office ? (office.counter_count || 1) : 1;
+      const assignment = assignStaffRole(staff.office_id, spectator.user_id, N);
 
-  // 4. Promotion Logic
-  let promotedUser = null;
-
-  // Only promote if we actually freed a spot? 
-  // Technically countersStmt.release ensures a spot is free (if they had one).
-  // We check if there's a spectator waiting.
-  const spectator = activeStaffStmt.getOldestSpectator.get(staff.office_id);
-
-  if (spectator) {
-    // Try to assign them a role (Atomic Claim)
-    // We need office max counters? Use a default or fetch office.
-    // Ideally pass it in, but here we don't have it.
-    // Fetch office config:
-    const office = officesStmt.getById.get(staff.office_id);
-    const N = office ? (office.counter_count || 1) : 1;
-
-    const assignment = assignStaffRole(staff.office_id, spectator.user_id, N);
-
-    if (assignment.role === 'OPERATOR') {
-      // Update their session in active_staff
-      activeStaffStmt.updateRole.run(assignment.counter_number, spectator.user_id);
-
-      promotedUser = {
-        userId: spectator.user_id,
-        newRole: 'OPERATOR',
-        counterNumber: assignment.counter_number
-      };
+      if (assignment.role === 'OPERATOR') {
+        activeStaffStmt.updateRole.run(assignment.counter_number, spectator.user_id);
+        promotedUser = {
+          userId: spectator.user_id,
+          newRole: 'OPERATOR',
+          counterNumber: assignment.counter_number
+        };
+      }
     }
+    return { officeId: staff.office_id, promotedUser };
+  } catch (e) {
+    try { db.prepare('ROLLBACK').run(); } catch (e2) { }
+    console.error('ReleaseStaff Error:', e);
+    return null;
   }
-
-  return {
-    officeId: staff.office_id,
-    promotedUser
-  };
 };
 
 const enrichTokens = (tokens) => {
