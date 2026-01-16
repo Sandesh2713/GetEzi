@@ -50,15 +50,12 @@ io.on('connection', (socket) => {
       if (!userId) return;
       const now = Date.now();
 
-      // 1. Update Session (Spectators + Operators)
       activeStaffStmt.updateHeartbeat.run({
         now: new Date(now).toISOString(),
         socket_id: socket.id,
         user_id: userId
       });
-
-      // 2. Pulse Counter (If Operator) - Keeps Lock Alive
-      countersStmt.pulse.run(now, userId);
+      // No more pulse or counter locks. Pure session tracking.
 
     } catch (e) { console.error('Heartbeat Error:', e); }
   });
@@ -72,8 +69,9 @@ setInterval(() => {
     const CUTOFF_MS = NOW - 30000; // 30s grace (User Req)
     const CUTOFF_ISO = new Date(CUTOFF_MS).toISOString();
 
-    // 1. Find Stale Counters (Ghost Desks - Critical)
-    const staleCounters = countersStmt.getStale.all(CUTOFF_MS);
+    // 1. Find Stale Counters (Ghost Desks) - Driven by Active Staff now
+    // If active_staff is stale, we release them, which frees the counter.
+    // So we don't query countersStmt.getStale anymore.
 
     // 2. Find Stale Spectators (Ghost Sessions)
     // Note: getStale uses ISO string for active_staff
@@ -81,7 +79,6 @@ setInterval(() => {
 
     // Create unique set of user IDs to release
     const toRelease = new Set([
-      ...staleCounters.map(c => c.user_id),
       ...staleSessions.map(s => s.user_id)
     ]);
 
@@ -323,126 +320,26 @@ const activeStaffStmt = {
   getStale: db.prepare(`SELECT * FROM active_staff WHERE last_seen < @cutoff`)
 };
 
-const countersStmt = {
-  // Sync
-  deleteAll: db.prepare(`DELETE FROM counters WHERE office_id = ?`),
-  insert: db.prepare(`INSERT INTO counters (office_id, counter_number) VALUES (?, ?)`),
+// --- STAFF LOGIC REMOVED (countersStmt, syncCounters, assignStaffRole, releaseStaff) ---
+// Now using Static Assignment in 'users' table.
 
-  // Claim
-  checkOwner: db.prepare(`SELECT * FROM counters WHERE user_id = ?`),
-  tryClaim: db.prepare(`
-    UPDATE counters 
-    SET user_id = @userId, last_seen = @now
-    WHERE id = (
-      SELECT id FROM counters 
-      WHERE office_id = @officeId AND user_id IS NULL 
-      ORDER BY counter_number ASC LIMIT 1
-    )
-  `),
-  getCounterByOwner: db.prepare(`SELECT counter_number FROM counters WHERE user_id = ?`),
+const getActiveStaffCount = (officeId) => {
+  // Count staff who are currently online (active_staff) AND have assigned_counter <= active_counters
+  const office = officesStmt.getById.get(officeId);
+  if (!office) return 0;
 
-  // Heartbeat
-  pulse: db.prepare(`UPDATE counters SET last_seen = ? WHERE user_id = ?`),
-
-  // Release
-  release: db.prepare(`UPDATE counters SET user_id = NULL WHERE user_id = ?`),
-
-  // Queries
-  getStale: db.prepare(`SELECT * FROM counters WHERE user_id IS NOT NULL AND last_seen < ?`)
-};
-
-const syncCounters = (officeId, maxCounters) => {
+  let sessions = [];
   try {
-    const txn = db.transaction(() => {
-      countersStmt.deleteAll.run(officeId);
-      for (let c = 1; c <= maxCounters; c++) {
-        countersStmt.insert.run(officeId, c);
-      }
-    });
-    txn();
-  } catch (e) { console.error('SyncCounters Error:', e); }
-};
-
-const assignStaffRole = (officeId, userId, maxCounters) => {
-  // 0. Ensure counters exist (Idempotent check)
-  const check = db.prepare('SELECT COUNT(*) as count FROM counters WHERE office_id = ?').get(officeId);
-  if (check.count === 0) syncCounters(officeId, maxCounters);
-
-  try {
-    db.prepare('BEGIN IMMEDIATE').run();
-
-    // 1. Check if user already owns a counter
-    const existing = countersStmt.checkOwner.get(userId);
-    if (existing) {
-      if (existing.office_id === officeId.toString()) {
-        countersStmt.pulse.run(Date.now(), userId);
-        db.prepare('COMMIT').run();
-        return { role: 'OPERATOR', counter_number: existing.counter_number };
-      } else {
-        countersStmt.release.run(userId);
-      }
-    }
-
-    // 2. Try to claim a free counter
-    const result = countersStmt.tryClaim.run({
-      userId,
-      now: Date.now(),
-      officeId
-    });
-
-    let assignedRole, assignedCounter;
-
-    if (result.changes === 1) {
-      assignedRole = 'OPERATOR';
-      const row = countersStmt.getCounterByOwner.get(userId);
-      assignedCounter = row.counter_number;
-    } else {
-      assignedRole = 'SPECTATOR';
-      assignedCounter = null;
-    }
-
-    db.prepare('COMMIT').run();
-    return { role: assignedRole, counter_number: assignedCounter };
-
+    sessions = activeStaffStmt.getForOffice.all(officeId);
   } catch (e) {
-    try { db.prepare('ROLLBACK').run(); } catch (e2) { }
-    console.error('AssignStaffRole Error:', e);
-    return { role: 'SPECTATOR', counter_number: null };
+    console.error("FATAL: getActiveStaffCount -> activeStaffStmt.getForOffice.all failed", e);
+    return 0;
   }
-};
 
-const releaseStaff = (userId) => {
-  const staff = activeStaffStmt.getByUser.get(userId);
-  if (!staff) return null;
-
-  try {
-    db.prepare('BEGIN IMMEDIATE').run();
-    activeStaffStmt.delete.run(userId);
-    countersStmt.release.run(userId);
-    db.prepare('COMMIT').run();
-
-    let promotedUser = null;
-    const spectator = activeStaffStmt.getOldestSpectator.get(staff.office_id);
-    if (spectator) {
-      const office = officesStmt.getById.get(staff.office_id);
-      const N = office ? (office.counter_count || 1) : 1;
-      const assignment = assignStaffRole(staff.office_id, spectator.user_id, N);
-
-      if (assignment.role === 'OPERATOR') {
-        activeStaffStmt.updateRole.run(assignment.counter_number, spectator.user_id);
-        promotedUser = {
-          userId: spectator.user_id,
-          newRole: 'OPERATOR',
-          counterNumber: assignment.counter_number
-        };
-      }
-    }
-    return { officeId: staff.office_id, promotedUser };
-  } catch (e) {
-    try { db.prepare('ROLLBACK').run(); } catch (e2) { }
-    console.error('ReleaseStaff Error:', e);
-    return null;
-  }
+  return sessions.filter(s => {
+    const u = usersStmt.getById.get(s.user_id);
+    return u && u.assigned_counter && u.assigned_counter <= (office.active_counters || 1);
+  }).length;
 };
 
 const enrichTokens = (tokens) => {
@@ -472,16 +369,34 @@ const enrichTokens = (tokens) => {
 };
 
 const recalculateQueue = (officeId) => {
+  // DEBUG CHECKS
+  if (!tokensStmt || !tokensStmt.getForOffice) {
+    console.error("FATAL: tokensStmt or tokensStmt.getForOffice is undefined!");
+    return;
+  }
+  if (!activeStaffStmt || !activeStaffStmt.getForOffice) {
+    console.error("FATAL: activeStaffStmt or activeStaffStmt.getForOffice is undefined!");
+    return;
+  }
+
   const office = officesStmt.getById.get(officeId);
   if (!office) return;
 
-  const allTokens = tokensStmt.getForOffice.all(officeId);
+  let allTokens = [];
+  try {
+    allTokens = tokensStmt.getForOffice.all(officeId);
+  } catch (e) {
+    console.error("FATAL: recalculateQueue -> tokensStmt.getForOffice.all failed", e);
+    throw e;
+  }
+
   // Sort by created_at (FIFO)
   const activeTokens = allTokens.filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
 
   // 1. Define Capacity
-  const N = office.counter_count || 1;
-  const M = N * 3;
+  // N is now the number of *active* staff who are operators and have an assigned counter
+  const N = getActiveStaffCount(officeId);
+  const M = N * 3; // Max allocated tokens
 
   // 2. Identify Groups & Promote
   const calledTokens = activeTokens.filter(t => t.status === 'CALLED');
@@ -503,7 +418,6 @@ const recalculateQueue = (officeId) => {
         console.log(`Auto-Swapping Token ${badToken.token_number} (Lazy) with ${goodToken.token_number} (Arrived)`);
 
         const now = toIso();
-        // Demote Bad Token
         // Demote Bad Token
         tokensStmt.updatePrediction.run({ id: badToken.id, score: score, status: 'SWAPPED_WAIT', expected_time: null }); // Preserve score
         tokensStmt.updateStatus.run({
@@ -537,9 +451,6 @@ const recalculateQueue = (officeId) => {
 
         // Update local lists for rest of function to be semi-accurate (though function will likely re-run soon)
         waitTokens.splice(candidateIdx, 1);
-        // Actually, since we modified DB, maybe safer to return and let next trigger handle?
-        // But to be safe, we just mark badToken as processed to avoid double swap in same loop?
-        // For simplicity, we assume one swap per tick is fine or splice.
       }
     }
   });
@@ -551,26 +462,26 @@ const recalculateQueue = (officeId) => {
 
   // --- 1.5 Grace Period Logic (Auto No-Show) ---
   if (allocatedTokens.length > 0) {
-    // Only enforced on the very first token to prevent blocking? 
-    // Or strictly all allocated tokens have a timer?
-    // Prompt: "When a token becomes eligible to be called" -> Allocation Time.
-    // We check ALL allocated tokens that are NOT_ARRIVED.
     allocatedTokens.forEach((token, idx) => {
       if (token.presence_status !== 'ARRIVED') {
         const nowMs = Date.now();
         if (!token.eligibility_time) {
-          // First time seen as allocated/eligible? 
-          // Ideally set when status becomes ALLOCATED.
-          // Backfill if missing (migration safety).
           tokensStmt.updateEligibility.run({ id: token.id, time: toIso() });
           token.eligibility_time = toIso();
         }
 
-        const elgTime = new Date(token.eligibility_time).getTime();
+        let elgTime = 0;
+        try {
+          elgTime = new Date(token.eligibility_time).getTime();
+          if (isNaN(elgTime)) throw new Error('Invalid Date');
+        } catch (e) {
+          elgTime = nowMs;
+          tokensStmt.updateEligibility.run({ id: token.id, time: toIso() });
+        }
+
         const GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 mins
 
         if (nowMs - elgTime > GRACE_PERIOD_MS) {
-          // Mark No-Show
           console.log(`Auto No-Show for Token ${token.token_number}`);
           tokensStmt.updateStatus.run({
             id: token.id,
@@ -591,14 +502,9 @@ const recalculateQueue = (officeId) => {
           if (recipientEmail) {
             sendEmail(recipientEmail, 'Missed Appointment - GetEzi', emailTemplates.tokenNoShow(token.user_name, token.token_number, office.name));
           }
-          // Since we modified list in-place via DB, we should probably restart recalculate or accept slight staleness until next run?
-          // We mark it, next run cleans it up.
         }
       }
     });
-    // Re-fetch after potential no-shows? 
-    // recalculateQueue calls itself recursively? No, infinite loop danger.
-    // We proceed. no-show tokens are filtered out next time.
   }
 
   let currentOccupancy = calledTokens.length + allocatedTokens.length;
@@ -608,27 +514,50 @@ const recalculateQueue = (officeId) => {
     const toPromote = waitTokens.slice(0, slotsOpen);
 
     // --- SMART ASSIGNMENT LOGIC ---
-    // Count load per counter (1..N)
-    // Load = Count(Allocated tokens assigned to counter X)
     const counterLoad = {};
-    for (let c = 1; c <= N; c++) counterLoad[c] = 0;
+    let activeCounters = [];
+    try {
+      activeCounters = activeStaffStmt.getForOffice.all(officeId)
+        .filter(s => {
+          const u = usersStmt.getById.get(s.user_id);
+          return u && u.role === 'staff' && u.assigned_counter;
+        })
+        .map(s => usersStmt.getById.get(s.user_id).assigned_counter)
+        .filter((value, index, self) => self.indexOf(value) === index) // Unique counters
+        .sort((a, b) => a - b); // Sort numerically
+    } catch (e) {
+      console.error("FATAL: recalculateQueue -> activeCounters calculation failed", e);
+      throw e;
+    }
+
+    activeCounters.forEach(c => counterLoad[c] = 0);
 
     allocatedTokens.forEach(t => {
-      if (t.assigned_counter && t.assigned_counter <= N) {
+      if (t.assigned_counter && activeCounters.includes(t.assigned_counter)) {
         counterLoad[t.assigned_counter]++;
       }
     });
 
     toPromote.forEach(token => {
-      // Find counter with min load
-      let bestCounter = 1;
+      // Find counter with min load among active counters
+      let bestCounter = null;
       let minLoad = Infinity;
 
-      for (let c = 1; c <= N; c++) {
+      if (activeCounters.length === 0) {
+        console.warn(`No active counters for office ${officeId}. Cannot assign token.`);
+        return; // Cannot assign if no active counters
+      }
+
+      for (const c of activeCounters) {
         if (counterLoad[c] < minLoad) {
           minLoad = counterLoad[c];
           bestCounter = c;
         }
+      }
+
+      if (!bestCounter) {
+        console.warn(`Could not find best counter for token ${token.id}. Skipping assignment.`);
+        return;
       }
 
       // Increment load for next iteration
@@ -902,14 +831,19 @@ app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, r
     const allTokens = tokensStmt.getForOffice.all(id);
 
     // SECURITY: Strict Operator Check
-    const staff = activeStaffStmt.getByUser.get(req.user.id);
-    if (!staff || staff.role !== 'OPERATOR') {
-      return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+    const staffUser = usersStmt.getById.get(req.user.id);
+    if (!staffUser || staffUser.role !== 'staff') {
+      return res.status(403).json({ error: 'Access Denied: Only staff can control the queue.' });
+    }
+    if (staffUser.assigned_counter !== cNum) {
+      return res.status(403).json({ error: `You are assigned to Counter ${staffUser.assigned_counter}, not ${cNum}.` });
+    }
+    // Check if staff is actively logged in for this office
+    const activeStaffSession = activeStaffStmt.getByUser.get(req.user.id);
+    if (!activeStaffSession || activeStaffSession.office_id !== id) {
+      return res.status(403).json({ error: 'Access Denied: Not an active staff member for this office.' });
     }
 
-    if (staff.counter_number !== cNum) {
-      return res.status(403).json({ error: `You are assigned to Counter ${staff.counter_number}, not ${cNum}.` });
-    }
 
     const busyToken = allTokens.find(t => t.status === 'CALLED' && t.called_by_counter === cNum);
     if (busyToken && !req.body.force) {
@@ -1012,14 +946,18 @@ app.post('/api/tokens/:id/complete', authenticateToken, (req, res) => {
 
   // SECURITY: Strict Operator Check
   // Allow if user is owner OR if admin operator
-  if (req.user.role === 'admin') {
-    const staff = activeStaffStmt.getByUser.get(req.user.id);
-    if (!staff || staff.role !== 'OPERATOR') {
-      return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
-    }
-    // Optional: Check if token was called by this counter?
-    // For now, allow any operator to complete/cancel to prevent deadlocks.
+  const staffUser = usersStmt.getById.get(req.user.id);
+  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner')) {
+    return res.status(403).json({ error: 'Access Denied: Only staff or office owners can complete tokens.' });
   }
+  // If staff, check if they are active for this office
+  if (staffUser.role === 'staff') {
+    const activeStaffSession = activeStaffStmt.getByUser.get(req.user.id);
+    if (!activeStaffSession || activeStaffSession.office_id !== token.office_id) {
+      return res.status(403).json({ error: 'Access Denied: Not an active staff member for this office.' });
+    }
+  }
+
 
   db.transaction(() => {
     tokensStmt.updateStatus.run({
@@ -1064,9 +1002,15 @@ app.post('/api/tokens/:id/complete', authenticateToken, (req, res) => {
 });
 
 // Cancel
-app.post('/api/tokens/:id/cancel', (req, res) => {
+app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
   const token = tokensStmt.getById.get(req.params.id);
   if (!token) return res.status(404).json({ error: 'Not found' });
+
+  // SECURITY: Strict Operator Check
+  const staffUser = usersStmt.getById.get(req.user.id);
+  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+    return res.status(403).json({ error: 'Access Denied: Only staff or office owners can cancel tokens.' });
+  }
 
   db.transaction(() => {
     tokensStmt.updateStatus.run({
@@ -1100,9 +1044,15 @@ app.post('/api/tokens/:id/cancel', (req, res) => {
 });
 
 // No-Show
-app.post('/api/tokens/:id/no-show', (req, res) => {
+app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
   const token = tokensStmt.getById.get(req.params.id);
   if (!token) return res.status(404).json({ error: 'Not found' });
+
+  // SECURITY: Strict Operator Check
+  const staffUser = usersStmt.getById.get(req.user.id);
+  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+    return res.status(403).json({ error: 'Access Denied: Only staff or office owners can mark no-show.' });
+  }
 
   db.transaction(() => {
     tokensStmt.updateStatus.run({
@@ -1144,18 +1094,33 @@ app.post('/api/tokens/:id/no-show', (req, res) => {
   res.json({ success: true });
 });
 
-// Arrive
-app.post('/api/tokens/:id/arrive', (req, res) => {
-  const token = tokensStmt.getById.get(req.params.id);
-  if (!token) return res.status(404).json({ error: 'Not found' });
+// Arrive (Office Owner/Staff confirmation)
+app.post('/api/tokens/:id/arrive', authenticateToken, (req, res) => {
+  try {
+    const token = tokensStmt.getById.get(req.params.id);
+    if (!token) return res.status(404).json({ error: 'Not found' });
 
-  db.transaction(() => {
-    tokensStmt.markArrived.run({ id: token.id, now: toIso() });
-  })();
+    // SECURITY: Strict Operator Check
+    const staffUser = usersStmt.getById.get(req.user.id);
+    if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+      // Allow customer to mark THEMSELVES as arrived?
+      // IF current user is the token owner, allow it.
+      if (req.user.id !== token.user_id) {
+        return res.status(403).json({ error: 'Access Denied.' });
+      }
+    }
 
-  recalculateQueue(token.office_id);
+    db.transaction(() => {
+      tokensStmt.markArrived.run({ id: token.id, now: toIso() });
+    })();
 
-  res.json({ success: true });
+    recalculateQueue(token.office_id);
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Arrive Endpoint Error:', err);
+    res.status(500).json({ error: 'System Error: ' + err.message });
+  }
 });
 
 // Admin: Config Counters
@@ -1175,10 +1140,32 @@ app.post('/api/offices/:id/config', authenticateToken, (req, res) => {
     });
   })();
 
-  // Sync atomic counters table
-  syncCounters(id, N);
-
   recalculateQueue(id);
+  res.json({ success: true });
+});
+
+// Admin: Config Active Counters
+app.post('/api/offices/:id/active-counters', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { activeCounters } = req.body;
+  const N = parseInt(activeCounters);
+
+  if (isNaN(N) || N < 0) return res.status(400).json({ error: 'Invalid count' });
+
+  // SECURITY: Only Office Owner
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  db.prepare('UPDATE offices SET active_counters = ? WHERE id = ?').run(N, id);
+
+  // Refresh Queue to update who is enabled/disabled
+  recalculateQueue(id);
+
+  // Notify staff
+  const staffList = activeStaffStmt.getForOffice.all(id);
+  io.to(`office_${id}`).emit('staff_update', staffList);
+
   res.json({ success: true });
 });
 
@@ -1192,9 +1179,16 @@ app.post('/api/offices/:id/pause', authenticateToken, (req, res) => {
   if (!office) return res.status(404).json({ error: 'Office not found' });
 
   // SECURITY: Strict Operator Check
-  const staff = activeStaffStmt.getByUser.get(req.user.id);
-  if (!staff || staff.role !== 'OPERATOR') {
-    return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+  const staffUser = usersStmt.getById.get(req.user.id);
+  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+    return res.status(403).json({ error: 'Access Denied: Only staff or office owners can pause the queue.' });
+  }
+  // If staff, check if they are active for this office
+  if (staffUser.role === 'staff') {
+    const activeStaffSession = activeStaffStmt.getByUser.get(req.user.id);
+    if (!activeStaffSession || activeStaffSession.office_id !== id) {
+      return res.status(403).json({ error: 'Access Denied: Not an active staff member for this office.' });
+    }
   }
 
   const now = toIso();
@@ -1233,9 +1227,16 @@ app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
   const { id } = req.params;
 
   // SECURITY: Strict Operator Check
-  const staff = activeStaffStmt.getByUser.get(req.user.id);
-  if (!staff || staff.role !== 'OPERATOR') {
-    return res.status(403).json({ error: 'Access Denied: Spectators cannot control the queue.' });
+  const staffUser = usersStmt.getById.get(req.user.id);
+  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+    return res.status(403).json({ error: 'Access Denied: Only staff or office owners can resume the queue.' });
+  }
+  // If staff, check if they are active for this office
+  if (staffUser.role === 'staff') {
+    const activeStaffSession = activeStaffStmt.getByUser.get(req.user.id);
+    if (!activeStaffSession || activeStaffSession.office_id !== id) {
+      return res.status(403).json({ error: 'Access Denied: Not an active staff member for this office.' });
+    }
   }
 
   db.transaction(() => {
@@ -1373,14 +1374,16 @@ app.get('/api/auth/me', (req, res) => {
     const user = usersStmt.getById.get(decoded.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Fetch Active Staff Role for Admin
+    // Fetch Active Staff Role for Admin/Staff
     let operationalRole = user.role;
-    let assignedCounter = null;
-    if (user.role === 'admin') {
+    let assignedCounter = user.assigned_counter || null; // From users table
+    let officeId = user.office_id || null; // From users table
+
+    if (user.role === 'staff' || user.role === 'office_owner') {
       const activeStaff = activeStaffStmt.getByUser.get(user.id);
       if (activeStaff) {
-        operationalRole = activeStaff.role;
-        assignedCounter = activeStaff.counter_number;
+        // If active session exists, use its office_id
+        officeId = activeStaff.office_id;
       }
     }
 
@@ -1390,8 +1393,9 @@ app.get('/api/auth/me', (req, res) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        operational_role: operationalRole,
+        operational_role: operationalRole, // This will be 'staff' or 'office_owner'
         assigned_counter: assignedCounter,
+        office_id: officeId, // The office they are currently active in
         is_verified: user.is_verified,
         phone: user.phone,
         dob: user.dob,
@@ -1424,71 +1428,132 @@ app.post('/api/auth/login', (req, res) => {
   const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '7d' });
 
   // --- STAFF LOGIC ---
-  let assignedRole = user.role;
-  let assignedCounter = null;
+  let operationalRole = user.role;
+  let assignedCounter = user.assigned_counter || null;
+  let officeId = user.office_id || null;
 
-  if (user.role === 'admin') {
-    const office = officesStmt.getAll.all()[0];
-    if (office) {
-      // Logic: Assign based on availability
-      const existingStaff = activeStaffStmt.getByUser.get(user.id);
-
-      if (existingStaff) {
-        assignedRole = existingStaff.role;
-        assignedCounter = existingStaff.counter_number;
-        // Do NOT update database; keep session alive
-      } else {
-        const result = assignStaffRole(office.id, user.id, office.counter_count || 1);
-        assignedRole = result.role;
-        assignedCounter = result.counter_number;
-
-        // Persist new session
-        activeStaffStmt.insert.run({
-          user_id: user.id,
-          office_id: office.id,
-          role: result.role,
-          counter_number: result.counter_number,
-          login_time: toIso()
-        });
-      }
-
-      // Notify Dashboard of new staff
-      const staffList = activeStaffStmt.getForOffice.all(office.id);
-      io.to(`office_${office.id}`).emit('staff_update', staffList);
+  if (user.role === 'staff' || user.role === 'office_owner') {
+    // For staff/office_owner, we need to track their active session
+    // They must have an office_id assigned in the users table
+    if (!user.office_id) {
+      return res.status(400).json({ error: 'Staff/Office Owner must be assigned to an office.' });
     }
+    officeId = user.office_id;
+
+    const existingActiveSession = activeStaffStmt.getByUser.get(user.id);
+    if (existingActiveSession) {
+      // User already has an active session, just update heartbeat
+      activeStaffStmt.updateHeartbeat.run({
+        user_id: user.id,
+        now: toIso(),
+        socket_id: null // Will be updated by socket connection
+      });
+    } else {
+      // Create new active session
+      activeStaffStmt.insert.run({
+        user_id: user.id,
+        office_id: officeId,
+        role: user.role, // Use role from users table
+        counter_number: assignedCounter, // Use assigned_counter from users table
+        login_time: toIso()
+      });
+    }
+
+    // Notify Dashboard of new/updated staff presence
+    const staffList = activeStaffStmt.getForOffice.all(officeId);
+    io.to(`office_${officeId}`).emit('staff_update', staffList);
   }
 
   res.json({
     token,
     user: {
       ...user,
-      operational_role: assignedRole, // 'OPERATOR' or 'SPECTATOR'
-      assigned_counter: assignedCounter
+      operational_role: operationalRole,
+      assigned_counter: assignedCounter,
+      office_id: officeId
     }
   });
 });
 
 app.post('/api/auth/logout', authenticateToken, (req, res) => {
-  // Release Staff
-  if (req.user.role === 'admin') {
-    const result = releaseStaff(req.user.id);
-    if (result && result.officeId) {
-      // Refresh Dashboard for everyone
-      const staffList = activeStaffStmt.getForOffice.all(result.officeId);
-      io.to(`office_${result.officeId}`).emit('staff_update', staffList);
+  // Simple Logout: Remove from active_staff
+  const userId = req.user.id;
+  const session = activeStaffStmt.getByUser.get(userId);
 
-      // Recalculate queue (capacity changed)
-      recalculateQueue(result.officeId);
-
-      // Notify promoted user
-      if (result.promotedUser) {
-        io.to(`user_${result.promotedUser.userId}`).emit('role_update', {
-          role: 'OPERATOR',
-          counter_number: result.promotedUser.counterNumber
-        });
-      }
-    }
+  if (session) {
+    activeStaffStmt.delete.run(userId);
+    // Notify office
+    const staffList = activeStaffStmt.getForOffice.all(session.office_id);
+    io.to(`office_${session.office_id}`).emit('staff_update', staffList);
   }
+
+  res.json({ success: true });
+});
+
+// --- STAFF MANAGEMENT (Office Owner Only) ---
+
+// Get All Staff for Office
+app.get('/api/offices/:id/staff-list', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
+
+  // Fetch users who are linked to this office and have role 'staff'
+  const staff = db.prepare(`SELECT id, name, email, role, assigned_counter, created_at FROM users WHERE office_id = ? AND role = 'staff'`).all(id);
+  res.json({ staff });
+});
+
+// Add Staff
+app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { name, email, password, counterNumber } = req.body;
+
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
+  if (!name || !email || !password || !counterNumber) return res.status(400).json({ error: 'Missing fields' });
+
+  const existing = usersStmt.getByEmail.get(email);
+  if (existing) return res.status(400).json({ error: 'Email already exists' });
+
+  const hash = bcrypt.hashSync(password, 10);
+  const newId = uuidv4();
+
+  try {
+    usersStmt.insert.run({
+      id: newId,
+      name,
+      email,
+      hash,
+      role: 'staff',
+      created_at: toIso()
+    });
+
+    // Update office link and counter
+    db.prepare(`UPDATE users SET office_id = ?, assigned_counter = ? WHERE id = ?`)
+      .run(id, counterNumber, newId);
+
+    res.json({ success: true, staff: { id: newId, name, email, assigned_counter: counterNumber } });
+  } catch (e) {
+    console.error("Add Staff Error:", e);
+    res.status(500).json({ error: 'Failed to create staff' });
+  }
+});
+
+// Remove Staff
+app.delete('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
+  const { id, staffId } = req.params;
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
+
+  // Ensure staff belongs to this office
+  const target = usersStmt.getById.get(staffId);
+  if (!target || target.office_id !== id) return res.status(404).json({ error: 'Staff not found in this office' });
+
+  // Delete user (or soft delete? For now hard delete per prompt "Remove staff")
+  db.prepare('DELETE FROM active_staff WHERE user_id = ?').run(staffId);
+  db.prepare('DELETE FROM users WHERE id = ?').run(staffId);
+
+  // Refresh dashboard
+  const staffList = activeStaffStmt.getForOffice.all(id);
+  io.to(`office_${id}`).emit('staff_update', staffList);
+
   res.json({ success: true });
 });
 
@@ -1555,7 +1620,7 @@ app.post('/api/offices', (req, res) => {
 
 // Update Retention Settings
 app.put('/api/admin/settings', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  if (req.user.role !== 'admin' && req.user.role !== 'office_owner') return res.status(403).json({ error: 'Admins only' });
 
   const { userId, retentionDays } = req.body;
   if (!userId || !retentionDays) return res.status(400).json({ error: 'Missing fields' });
@@ -1566,7 +1631,8 @@ app.put('/api/admin/settings', authenticateToken, (req, res) => {
 
 // Get Token History (Filtered)
 app.get('/api/admin/token-history', authenticateToken, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  // Allow office_owner and admin
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
 
   // Use req.user.id to ensure they only see THEIR office? 
   // Code seems to rely on selectedOfficeId passed in query. 
@@ -1587,7 +1653,7 @@ app.get('/api/admin/token-history', authenticateToken, (req, res) => {
 
 // Export Token History (Excel)
 app.get('/api/admin/token-history/export', authenticateToken, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admins only' });
+  if (req.user.role !== 'office_owner') return res.status(403).json({ error: 'Access Denied' });
 
   const { officeId, start, end } = req.query;
   const startDate = start ? new Date(start).toISOString() : new Date(0).toISOString();
@@ -1760,6 +1826,16 @@ cron.schedule('0 1 * * *', () => {
   } catch (err) {
     console.error('Cleanup Failed:', err);
   }
+});
+
+// Debug Endpoint
+app.get('/api/debug-stmts', (req, res) => {
+  res.json({
+    tokensStmt: !!tokensStmt,
+    tokensStmt_getForOffice: !!(tokensStmt && tokensStmt.getForOffice),
+    activeStaffStmt: !!activeStaffStmt,
+    activeStaffStmt_getForOffice: !!(activeStaffStmt && activeStaffStmt.getForOffice)
+  });
 });
 
 // 404/Error

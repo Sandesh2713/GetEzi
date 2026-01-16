@@ -173,6 +173,8 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN arrival_status TEXT`); } catch (e) 
 // expected_arrival_time already exists in schema but let's ensure it covers all bases if needed, 
 // though 'expected_completion_time' was there, 'expected_arrival_time' is specific to this feature.
 try { db.exec(`ALTER TABLE tokens ADD COLUMN expected_arrival_time TEXT`); } catch (e) { }
+try { db.exec(`ALTER TABLE tokens ADD COLUMN presence_status TEXT DEFAULT 'PENDING'`); } catch (e) { }
+try { db.exec(`ALTER TABLE tokens ADD COLUMN arrival_confirmed_at TEXT`); } catch (e) { }
 
 // Office Pause Schema
 try { db.exec(`ALTER TABLE offices ADD COLUMN state TEXT DEFAULT 'LIVE'`); } catch (e) { }
@@ -183,34 +185,28 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN assigned_counter INTEGER`); } catch
 try { db.exec(`ALTER TABLE tokens ADD COLUMN called_by_counter INTEGER`); } catch (e) { }
 try { db.exec(`ALTER TABLE token_history ADD COLUMN counter_number INTEGER`); } catch (e) { }
 
-// NEW: Active Staff for Session Management
+// NEW: Active Staff for Session Management (Session Tracking Only)
 db.exec(`
+DROP TABLE IF EXISTS active_staff;
 CREATE TABLE IF NOT EXISTS active_staff (
   user_id TEXT PRIMARY KEY,
   office_id TEXT NOT NULL,
-  role TEXT NOT NULL, -- 'OPERATOR' or 'SPECTATOR'
+  role TEXT NOT NULL, 
   counter_number INTEGER,
   login_time TEXT NOT NULL,
+  last_seen TEXT,
+  socket_id TEXT,
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (office_id) REFERENCES offices(id)
 );
 `);
 
-// Migration for active_staff last_seen
-try { db.exec(`ALTER TABLE active_staff ADD COLUMN last_seen TEXT`); } catch (e) { }
-try { db.exec(`ALTER TABLE active_staff ADD COLUMN socket_id TEXT`); } catch (e) { }
+// MIGRATIONS for Static Staff Assignment
+try { db.exec(`ALTER TABLE users ADD COLUMN office_id TEXT REFERENCES offices(id)`); } catch (e) { }
+try { db.exec(`ALTER TABLE users ADD COLUMN assigned_counter INTEGER DEFAULT NULL`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN active_counters INTEGER DEFAULT 1`); } catch (e) { }
 
-// Counters Table for Atomic Locking (Strict Unique)
-db.exec(`
-DROP TABLE IF EXISTS counters;
-CREATE TABLE counters (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  office_id TEXT NOT NULL,
-  counter_number INTEGER NOT NULL,
-  user_id TEXT UNIQUE, -- admin_id in user spec (mapped to user_id here)
-  last_seen INTEGER,
-  UNIQUE(office_id, counter_number)
-);
-`);
+// Drop obsolete dynamic counters table
+db.exec(`DROP TABLE IF EXISTS counters;`);
 
 module.exports = db;

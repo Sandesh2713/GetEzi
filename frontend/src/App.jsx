@@ -366,13 +366,19 @@ function LoginView({ onSuccess, onSwitch, onBack, role }) {
   const [password, setPassword] = useState('');
 
   // If role is passed, enforce it.
-  const roleProp = role; // 'admin' or 'customer' or undefined
-  const [isAdmin, setIsAdmin] = useState(role === 'admin');
+  const roleProp = role; // 'admin', 'office_owner', 'customer', or undefined
+  const [isAdmin, setIsAdmin] = useState(role === 'admin'); // Legacy admin requires key
+  // office_owner uses standard email/pass but routes differently
+
   const [adminKey, setAdminKey] = useState('');
   const [error, setError] = useState('');
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (isAdmin && !adminKey) {
+      setError('Admin Key is required for legacy admin login.');
+      return;
+    }
     try {
       await login(email, password, isAdmin ? adminKey : undefined);
       onSuccess();
@@ -424,7 +430,7 @@ function LoginView({ onSuccess, onSwitch, onBack, role }) {
           </span>
         </div>
 
-        {/* Admin Toggle - Hidden if role is explicitly customer */}
+        {/* Admin Toggle - Hidden if role is explicitly set */}
         {!roleProp && (
           <div style={{ margin: '4px 0', fontSize: '13px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', color: 'var(--gray-500)' }}>
@@ -435,13 +441,12 @@ function LoginView({ onSuccess, onSwitch, onBack, role }) {
         )}
 
         {isAdmin && (
-          <div className="field">
+          <div className="field animate-fade-in">
             <input
               type="password"
               value={adminKey}
               onChange={(e) => setAdminKey(e.target.value)}
-              required
-              placeholder="Admin Key"
+              placeholder="Legacy Admin Key"
               className="rounded-input"
             />
           </div>
@@ -1058,12 +1063,23 @@ function LandingView({ onLogin, onRegisterAdmin, onRegisterCustomer }) {
       <div className="landing-content">
         <div className="landing-card">
           <div className="card-text-group">
-            <h2>For <i>Companies</i></h2>
-            <p>Your people, your business, your growth - beautifully managed.</p>
+            <h2>For <i>Office Owners</i></h2>
+            <p>Manage your staff, monitor queues, and analyze performance.</p>
           </div>
-          <button className="login-black-btn" onClick={() => onLogin('admin')}>Login</button>
+          <button className="login-black-btn" onClick={() => onLogin('office_owner')}>Login</button>
           <div className="signup-prompt">
             Don't have an account? <span onClick={onRegisterAdmin} className="link">Sign up.</span>
+          </div>
+        </div>
+
+        <div className="landing-card">
+          <div className="card-text-group">
+            <h2>For <i>Staff</i></h2>
+            <p>Access your counter and manage daily operations.</p>
+          </div>
+          <button className="login-black-btn" onClick={() => onLogin('staff')}>Login</button>
+          <div className="signup-prompt">
+            <span className="text-muted" style={{ fontSize: '0.8rem' }}>Contact your manager for credentials.</span>
           </div>
         </div>
 
@@ -1678,7 +1694,7 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
 
       <div style={{ display: 'grid', gap: '24px' }}>
         {/* Office Settings (Availability) */}
-        {user.role === 'admin' && (
+        {['admin', 'office_owner'].includes(user.role) && (
           <section className="card hover-lift">
             <div className="panel-header">
               <div>
@@ -1697,7 +1713,7 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
                   min="1"
                 />
                 <small className="text-muted" style={{ fontSize: '0.8rem', marginTop: '4px' }}>
-                  Limits simultaneous operators. Excess admins become Spectators.
+                  Limits simultaneous operators. Excess staff become Spectators.
                 </small>
               </div>
               <div style={{ display: 'flex', alignItems: 'flex-start', paddingTop: '28px' }}>
@@ -1710,7 +1726,7 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
         )}
 
         {/* Data Retention Card */}
-        {user.role === 'admin' ? (
+        {['admin', 'office_owner'].includes(user.role) ? (
           <>
             <section className="card hover-lift">
               <div className="panel-header">
@@ -1728,6 +1744,8 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
                     onChange={e => setRetention(e.target.value)}
                     style={{ cursor: 'pointer' }}
                   >
+                    <option value={7}>7 Days</option>
+                    <option value={14}>14 Days</option>
                     <option value={30}>30 Days</option>
                     <option value={60}>60 Days</option>
                     <option value={90}>90 Days</option>
@@ -1911,14 +1929,524 @@ function StatusBanner({ office }) {
   );
 }
 
+// --- NEW: Super Admin Dashboard ---
+function SuperAdminDashboard({ user, office, onLogout, onNavigate }) {
+  const [activeTab, setActiveTab] = useState('staff'); // 'staff', 'settings', 'stats'
+
+  // Staff State
+  const [staffList, setStaffList] = useState([]);
+  const [newStaff, setNewStaff] = useState({ name: '', email: '', password: '', counterNumber: '' });
+  const [showAddStaff, setShowAddStaff] = useState(false);
+
+  // Settings State
+  const [activeCounters, setActiveCounters] = useState(office?.active_counters || 1);
+  const [retention, setRetention] = useState(user.history_retention_days || 30);
+  const [exportStart, setExportStart] = useState("");
+  const [exportEnd, setExportEnd] = useState("");
+
+  const [msg, setMsg] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (office) {
+      loadStaff();
+      setActiveCounters(office.active_counters || 1);
+    }
+  }, [office]);
+
+  const loadStaff = async () => {
+    try {
+      const data = await fetchJSON(`/api/offices/${office.id}/staff-list`);
+      setStaffList(data.staff);
+    } catch (e) { console.error(e); }
+  };
+
+  const handleAddStaff = async (e) => {
+    e.preventDefault();
+    try {
+      await fetchJSON(`/api/offices/${office.id}/staff`, {
+        method: 'POST',
+        body: JSON.stringify(newStaff)
+      });
+      setMsg('Staff added!');
+      setNewStaff({ name: '', email: '', password: '', counterNumber: '' });
+      setShowAddStaff(false);
+      loadStaff();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const handleRemoveStaff = async (staffId) => {
+    if (!confirm('Remove this staff member?')) return;
+    try {
+      await fetchJSON(`/api/offices/${office.id}/staff/${staffId}`, { method: 'DELETE' });
+      loadStaff();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  const updateActiveCounters = async () => {
+    setLoading(true);
+    try {
+      await fetchJSON(`/api/offices/${office.id}/active-counters`, {
+        method: 'POST',
+        body: JSON.stringify({ activeCounters })
+      });
+      setMsg('Capacity updated');
+    } catch (e) { setMsg(e.message); } finally { setLoading(false); }
+  };
+
+  const handleSaveRetention = async () => {
+    setLoading(true);
+    try {
+      await fetchJSON('/api/admin/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ userId: user.id, retentionDays: Number(retention) })
+      });
+      setMsg('Retention policy saved.');
+    } catch (err) { setMsg(err.message); } finally { setLoading(false); }
+  };
+
+  const handleExport = async () => {
+    if (!exportStart || !exportEnd) return setMsg("Select dates first");
+    setMsg("Exporting...");
+    try {
+      const query = new URLSearchParams({ start: exportStart, end: exportEnd, format: 'xlsx' }).toString();
+      fetch(`/api/admin/export?${query}`, { headers: { Authorization: `Bearer ${sessionStorage.getItem('token')}` } })
+        .then(res => res.blob())
+        .then(blob => {
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `token_history.xlsx`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setMsg("Download started");
+        });
+    } catch (err) { setMsg(err.message); }
+  };
+
+  const handlePauseResume = async () => {
+    if (!confirm(office.is_paused ? "Resume operations?" : "Pause operations?")) return;
+    try {
+      const action = office.is_paused ? 'resume' : 'pause';
+      // We need an endpoint for this, assuming reuse of 'pause' logic
+      // Actually 'pause' endpoint takes a body. Let's use simple toggle if API supports, or default reason.
+      await fetchJSON(`/api/offices/${office.id}/${action}`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'Manual Toggle', message: 'Operations update' })
+      });
+      // Force reload or wait for socket
+      window.location.reload();
+    } catch (e) { setMsg(e.message); }
+  };
+
+  return (
+    <div className="dashboard-layout" style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+        <div>
+          <div className="eyebrow">Super Admin Portal</div>
+          <h2 style={{ fontSize: '2rem', marginBottom: '4px' }}>{office?.name || 'My Office'}</h2>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+            <span className={`chip ${office?.is_paused ? 'chip-warning' : 'chip-success'}`}>
+              <span className="chip-dot" />
+              {office?.is_paused ? 'Operations Paused' : 'System Live'}
+            </span>
+            <span className="text-muted">Owner: {user.name}</span>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button className="btn btn-secondary" onClick={onLogout}>Logout</button>
+        </div>
+      </header>
+
+      {/* Tabs */}
+      <div className="tabs" style={{ display: 'flex', gap: '24px', borderBottom: '1px solid #eee', marginBottom: '24px' }}>
+        <button className={`tab-btn ${activeTab === 'staff' ? 'active' : ''}`} onClick={() => setActiveTab('staff')}>Staff & Counters</button>
+        <button className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>Office Controls</button>
+        <button className={`tab-btn ${activeTab === 'stats' ? 'active' : ''}`} onClick={() => setActiveTab('stats')}>Analytics</button>
+      </div>
+
+      {msg && <div className={`message ${msg.includes('Error') ? 'error' : ''}`}>{msg}</div>}
+
+      {activeTab === 'staff' && (
+        <section className="card">
+          <div className="panel-header" style={{ alignItems: 'flex-end', marginBottom: '20px' }}>
+            <div>
+              <h3>Staff Management</h3>
+              <p style={{ color: '#6b7280', fontSize: '0.9rem', marginTop: '4px' }}>
+                Manage who can operate counters. <br />
+                <span style={{ fontSize: '0.8rem', color: 'var(--primary-600)' }}>
+                  Current Active Capacity: <b>{activeCounters} counters</b>
+                </span>
+              </p>
+            </div>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#4b5563' }}>Active Limit</label>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="number"
+                    min="0"
+                    value={activeCounters}
+                    onChange={e => setActiveCounters(e.target.value)}
+                    style={{ width: '80px', padding: '6px' }}
+                    className="rounded-input"
+                  />
+                  <button className="btn btn-secondary small" onClick={updateActiveCounters} disabled={loading}>
+                    {loading ? '...' : 'Set'}
+                  </button>
+                </div>
+              </div>
+              <button className="btn btn-primary" onClick={() => setShowAddStaff(!showAddStaff)}>
+                {showAddStaff ? 'Cancel' : 'Add New Staff'}
+              </button>
+            </div>
+          </div>
+
+          {showAddStaff && (
+            <form onSubmit={handleAddStaff} className="active-staff-form" style={{ background: '#f9fafb', padding: '20px', borderRadius: '8px', marginBottom: '24px' }}>
+              <div className="grid-2">
+                <input type="text" placeholder="Full Name" value={newStaff.name} onChange={e => setNewStaff({ ...newStaff, name: e.target.value })} required className="rounded-input" />
+                <input type="email" placeholder="Email Address" value={newStaff.email} onChange={e => setNewStaff({ ...newStaff, email: e.target.value })} required className="rounded-input" />
+              </div>
+              <div className="grid-2" style={{ marginTop: '12px' }}>
+                <input type="password" placeholder="Password" value={newStaff.password} onChange={e => setNewStaff({ ...newStaff, password: e.target.value })} required className="rounded-input" />
+                <input type="number" placeholder="Assigned Counter #" value={newStaff.counterNumber} onChange={e => setNewStaff({ ...newStaff, counterNumber: e.target.value })} required className="rounded-input" />
+              </div>
+              <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+                <button type="submit" className="btn btn-black">Create Staff Account</button>
+              </div>
+            </form>
+          )}
+
+          <div className="staff-list" style={{ background: 'white', borderRadius: '12px', border: '1px solid #eee', overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead style={{ background: '#f9fafb' }}>
+                <tr style={{ textAlign: 'left' }}>
+                  <th style={{ padding: '12px 16px', fontSize: '0.85rem', color: '#6b7280' }}>Staff Member</th>
+                  <th style={{ padding: '12px 16px', fontSize: '0.85rem', color: '#6b7280' }}>Assigned Counter</th>
+                  <th style={{ padding: '12px 16px', fontSize: '0.85rem', color: '#6b7280' }}>Status</th>
+                  <th style={{ padding: '12px 16px', fontSize: '0.85rem', color: '#6b7280' }}>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {staffList.length === 0 && <tr><td colSpan="4" style={{ padding: '20px', textAlign: 'center', color: '#9ca3af' }}>No staff found. Add someone to get started.</td></tr>}
+                {staffList.map(s => (
+                  <tr key={s.id} style={{ borderTop: '1px solid #eee' }}>
+                    <td style={{ padding: '12px 16px' }}>
+                      <div style={{ fontWeight: 500 }}>{s.name}</div>
+                      <div style={{ fontSize: '0.8rem', color: '#6b7280' }}>{s.email}</div>
+                    </td>
+                    <td style={{ padding: '12px 16px' }}>
+                      <span className="badge badge-neutral">Counter #{s.assigned_counter}</span>
+                    </td>
+                    <td style={{ padding: '12px 16px' }}>
+                      {parseInt(s.assigned_counter) <= parseInt(activeCounters) ? (
+                        <span className="chip chip-success"><span className="chip-dot"></span> Active</span>
+                      ) : (
+                        <div title={`Increase "Active Limit" to at least ${s.assigned_counter} to enable this staff.`} style={{ cursor: 'help' }}>
+                          <span className="chip chip-warning" style={{ opacity: 0.7 }}>
+                            <span className="chip-dot" style={{ background: 'gray' }}></span>
+                            Disabled (Limit {activeCounters})
+                          </span>
+                          <div style={{ fontSize: '0.7rem', color: 'red', marginTop: '2px' }}>Increase Limit to Enable</div>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '12px 16px' }}>
+                      <button className="btn btn-ghost small" onClick={() => handleRemoveStaff(s.id)} style={{ color: '#ef4444' }}>Remove</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'settings' && (
+        <div className="animate-fade-in grid-2" style={{ alignItems: 'start', gap: '24px' }}>
+          <section className="card">
+            <div className="panel-header">
+              <h3>Operational Capacity</h3>
+            </div>
+            <p className="text-muted" style={{ marginBottom: '16px' }}>Set the number of active counters. Staff on counters above this number will be disabled.</p>
+            <div className="input-group">
+              <label className="input-label">Active Counters</label>
+              <input type="number" className="input-field" value={activeCounters} onChange={e => setActiveCounters(e.target.value)} min="1" />
+            </div>
+            <button className="btn btn-primary" style={{ marginTop: '16px', width: '100%' }} onClick={updateActiveCounters} disabled={loading}>
+              {loading ? 'Saving...' : 'Update Capacity'}
+            </button>
+
+            <div style={{ marginTop: '32px', borderTop: '1px solid var(--gray-200)', paddingTop: '24px' }}>
+              <h4 style={{ color: '#b91c1c' }}>Emergency Controls</h4>
+              {office?.is_paused ? (
+                <button className="btn btn-success" style={{ width: '100%', marginTop: '12px', backgroundColor: '#16a34a', color: 'white' }} onClick={handlePauseResume}>Resume Operations</button>
+              ) : (
+                <button className="btn btn-danger" style={{ width: '100%', marginTop: '12px', backgroundColor: '#fee2e2', color: '#b91c1c', border: '1px solid #fecaca' }} onClick={handlePauseResume}>Pause Operations</button>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <div className="panel-header">
+              <h3>Data & Reports</h3>
+            </div>
+
+            <div style={{ marginBottom: '24px' }}>
+              <label className="input-label" style={{ marginBottom: '8px', display: 'block' }}>Data Retention Policy</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <select className="input-field" value={retention} onChange={e => setRetention(e.target.value)} style={{ flex: 1 }}>
+                  <option value={7}>7 Days</option>
+                  <option value={14}>14 Days</option>
+                  <option value={30}>30 Days</option>
+                  <option value={90}>90 Days</option>
+                </select>
+                <button className="btn btn-secondary" onClick={handleSaveRetention}>Save</button>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '24px', paddingTop: '24px', borderTop: '1px solid var(--gray-200)' }}>
+              <h4 style={{ marginBottom: '16px' }}>Download Token History</h4>
+              <div className="grid-2" style={{ gap: '8px' }}>
+                <div>
+                  <label className="text-muted" style={{ fontSize: '0.8rem' }}>Start Date</label>
+                  <input type="date" className="input-field" value={exportStart} onChange={e => setExportStart(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-muted" style={{ fontSize: '0.8rem' }}>End Date</label>
+                  <input type="date" className="input-field" value={exportEnd} onChange={e => setExportEnd(e.target.value)} />
+                </div>
+              </div>
+              <button className="btn btn-secondary" style={{ width: '100%', marginTop: '16px' }} onClick={handleExport}>Download CSV Report</button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activeTab === 'stats' && (
+        <div className="card text-center" style={{ padding: '64px 24px' }}>
+          <div style={{ fontSize: '3rem', marginBottom: '16px' }}>📊</div>
+          <h3>Analytics Dashboard</h3>
+          <p className="text-muted" style={{ maxWidth: '400px', margin: '0 auto', marginTop: '8px' }}>
+            Advanced insights, average wait times, and staff performance metrics are being processed. Check back soon.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- NEW: Staff Dashboard ---
+function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout }) {
+  const isActive = user.assigned_counter <= (office?.active_counters || 1);
+  const myCounter = user.assigned_counter;
+
+  // Filter tokens for MY counter
+  // In the new logic, tokens are assigned to a counter. 
+  // We need to show:
+  // 1. Current Token (Status = CALLED, Assigned to Me)
+  // 2. Waiting Tokens (Status = WAIT, Allocation might be pending or dynamic, but we show the general queue or my allocation)
+  //    Legacy system: Admin saw ALL waiting tokens or filtered list. 
+  //    Staff system: You likely pull from the general pool or your specific queue. 
+  //    For now, we show tokens assigned to this counter OR unassigned tokens if 'Next' pulls from global.
+  //    Actually, 'onCall' (server side) assigns a token to me. So I should see tokens in 'WAIT' status that are assigned to me OR generally available?
+  //    Let's stick to: My Current (CALLED) + My Queue (ALLOCATED/WAIT with assigned_counter = myCounter).
+
+  const myTokens = tokens.filter(t => t.assigned_counter === myCounter);
+  const currentToken = myTokens.find(t => t.status === 'CALLED');
+  // For queue list, show ALL waiting tokens for this office if not strictly assigned yet, 
+  // or just assigned ones. To mimic "Admin View", we often showed the whole queue.
+  // But strict assignment says "Allocated to Counter X".
+  // Let's show "My Queue" (Allocated to me) and "General Pool" (Waiting).
+  const myQueue = myTokens.filter(t => ['ALLOCATED', 'WAIT'].includes(t.status));
+  const generalQueue = tokens.filter(t => t.status === 'WAIT' && !t.assigned_counter);
+
+  return (
+    <div className="dashboard-layout" style={{ maxWidth: '1000px', margin: '0 auto', padding: '24px', display: 'grid', gridTemplateColumns: '1fr 350px', gap: '24px', alignItems: 'start' }}>
+
+      {/* LEFT COLUMN: Controls */}
+      <main>
+        <header style={{ marginBottom: '32px' }}>
+          <div className="eyebrow" style={{ color: isActive ? 'var(--primary-600)' : 'var(--error-600)' }}>
+            {isActive ? '● Online & Ready' : '● Counter Disabled'}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+            <div>
+              <h2 style={{ fontSize: '2.5rem', fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1 }}>Counter {myCounter}</h2>
+              <div className="text-muted" style={{ fontSize: '1.1rem', marginTop: '8px' }}>Staff: {user.name}</div>
+            </div>
+            <button className="btn btn-secondary" onClick={onLogout}>Logout</button>
+          </div>
+        </header>
+
+        {!isActive && (
+          <div className="card" style={{ background: '#fee2e2', border: '1px solid #fecaca', color: '#b91c1c' }}>
+            <h3 style={{ fontSize: '1.25rem', marginBottom: '8px' }}>⛔ Counter Inactive</h3>
+            <p>This counter is currently disabled by the office manager.<br />Please ask them to increase the <b>Active Counter Limit</b> to {myCounter}.</p>
+          </div>
+        )}
+
+        {isActive && (
+          <div className="card" style={{ padding: '40px', textAlign: 'center', minHeight: '400px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
+            {currentToken ? (
+              <div className="animate-fade-in" style={{ width: '100%' }}>
+                <span className="badge badge-primary" style={{ marginBottom: '16px' }}>Now Serving</span>
+
+                <div style={{ fontSize: '5rem', fontWeight: 900, lineHeight: 1, marginBottom: '8px' }}>
+                  #{currentToken.token_number}
+                </div>
+                <div style={{ fontSize: '2rem', fontWeight: 600, marginBottom: '8px' }}>
+                  {currentToken.user_name}
+                </div>
+
+                <div style={{ display: 'flex', gap: '24px', justifyContent: 'center', margin: '24px 0', color: 'var(--text-muted)' }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Service</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>{currentToken.service_type || 'General'}</div>
+                  </div>
+                  <div style={{ width: '1px', background: 'var(--gray-200)' }}></div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Waited</div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>
+                      {Math.floor((new Date() - new Date(currentToken.created_at)) / 60000)}m
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', maxWidth: '400px', margin: '0 auto' }}>
+                  <button
+                    className="btn btn-primary big"
+                    style={{ height: '64px', fontSize: '1.2rem' }}
+                    onClick={() => onUpdateToken(currentToken.id, 'complete')}
+                  >
+                    Complete
+                  </button>
+                  <button
+                    className="btn btn-secondary big"
+                    style={{ height: '64px', fontSize: '1.2rem' }}
+                    onClick={() => onUpdateToken(currentToken.id, 'no-show')}
+                  >
+                    No Show
+                  </button>
+                </div>
+                <div style={{ marginTop: '16px' }}>
+                  <button className="link" style={{ color: 'var(--text-muted)' }} onClick={() => onUpdateToken(currentToken.id, 'recall')}>Recall Customer</button>
+                </div>
+              </div>
+            ) : (
+              <div className="animate-fade-in">
+                <div style={{ fontSize: '4rem', marginBottom: '16px' }}>☕️</div>
+                <h3 style={{ fontSize: '2rem', marginBottom: '16px', color: 'var(--gray-400)' }}>Ready to Serve</h3>
+                <p style={{ color: 'var(--gray-500)', marginBottom: '32px' }}>
+                  {myQueue.length + generalQueue.length > 0
+                    ? `${myQueue.length + generalQueue.length} customers waiting in queue.`
+                    : "Queue is currently empty."}
+                </p>
+                <button
+                  className="btn btn-black big"
+                  style={{ fontSize: '1.5rem', padding: '20px 48px', boxShadow: 'var(--shadow-lg)' }}
+                  onClick={() => onCall(myCounter)}
+                  disabled={!office || office.state !== 'LIVE'}
+                >
+                  Call Next Customer
+                </button>
+                {office?.state !== 'LIVE' && <div style={{ color: 'var(--error-600)', marginTop: '16px', fontWeight: 600 }}>Queue is Paused</div>}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      {/* RIGHT COLUMN: Queue List */}
+      <aside style={{ height: '100%' }}>
+        <div className="card" style={{ height: 'fit-content', maxHeight: 'calc(100vh - 48px)', overflowY: 'auto' }}>
+          <div className="panel-header" style={{ position: 'sticky', top: 0, background: 'white', zIndex: 10, paddingBottom: 12, marginBottom: 0, borderBottom: '1px solid #eee' }}>
+            <h3>Up Next</h3>
+            <span className="badge badge-neutral">{myQueue.length}</span>
+          </div>
+
+          <div className="token-list">
+            {myQueue.length === 0 && <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--gray-400)' }}>No allocations.</div>}
+
+            {myQueue.map((t, idx) => (
+              <div key={t.id} className="token-row" style={{ padding: '16px', borderLeft: idx === 0 ? '4px solid var(--primary-500)' : '4px solid transparent' }}>
+                <div>
+                  <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>#{t.token_number}</div>
+                  <div style={{ fontSize: '0.9rem' }}>{t.user_name}</div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait · {t.service_type || 'General'}
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {/* General Pool hint */}
+            {generalQueue.length > 0 && (
+              <div style={{ padding: '12px', textAlign: 'center', borderTop: '1px solid #eee', background: '#f9fafb', fontSize: '0.85rem', color: 'var(--gray-500)' }}>
+                + {generalQueue.length} unassigned in General Pool
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Booked / Future List */}
+        <div className="card" style={{ marginTop: '24px', maxHeight: '40vh', overflowY: 'auto' }}>
+          <div className="panel-header" style={{ position: 'sticky', top: 0, background: 'white', zIndex: 10, paddingBottom: 12, marginBottom: 0, borderBottom: '1px solid #eee' }}>
+            <h3>Future Bookings</h3>
+            <span className="badge badge-neutral">{tokens.filter(t => t.status === 'booked').length}</span>
+          </div>
+
+          <div className="token-list">
+            {tokens.filter(t => t.status === 'booked').length === 0 && <div className="text-muted" style={{ padding: '24px', textAlign: 'center' }}>No future bookings.</div>}
+
+            {tokens.filter(t => t.status === 'booked').map(t => (
+              <div key={t.id} className="token-row" style={{ padding: '12px', opacity: 0.7 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '0.95rem', fontWeight: 600 }}>#{t.token_number} {t.user_name}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{t.service_type || 'General'}</div>
+                  </div>
+                  <div style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--gray-500)' }}>
+                    {t.expected_arrival_time ? new Date(t.expected_arrival_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Anytime'}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card" style={{ marginTop: '24px' }}>
+          <div className="panel-header"><h3>Stats</h3></div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{tokens.filter(t => t.assigned_counter === myCounter && ['COMPLETED'].includes(t.status)).length}</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Served</div>
+            </div>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{tokens.filter(t => t.assigned_counter === myCounter && ['no-show'].includes(t.status)).length}</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>No Show</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 function App() {
   const { user, logout, loading: authLoading } = useAuth();
 
+  const getDefaultView = (u) => {
+    if (!u) return 'landing';
+    if (u.role === 'office_owner' || u.role === 'admin') return 'super_admin'; // Legacy admin -> Super Admin
+    if (u.role === 'staff') return 'staff';
+    return 'customer';
+  };
+
   // Initialize view from history state or default
-  const [view, setViewState] = useState(user ? (user.role === 'admin' ? 'admin' : 'customer') : 'landing');
-
-
-
+  const [view, setViewState] = useState(getDefaultView(user));
 
   // Wrapper to sync history
   const setView = (newView, addToHistory = true) => {
@@ -1928,23 +2456,34 @@ function App() {
     }
   };
 
-  // Handle browser back/forward
+  // Handle browser back/forward and Initial Redirect
   useEffect(() => {
     const handlePopState = (event) => {
       if (event.state && event.state.view) {
         setViewState(event.state.view);
       } else {
-        // Default fallback if no state (e.g. initial load)
-        setViewState(user ? (user.role === 'admin' ? 'admin' : 'customer') : 'landing');
+        setViewState(getDefaultView(user));
       }
     };
     window.addEventListener('popstate', handlePopState);
+
+    // Auto-redirect if on generic auth pages but already logged in
+    if (user && ['landing', 'login', 'register', 'verify-email'].includes(view)) {
+      const target = getDefaultView(user);
+      if (view !== target) setView(target, false);
+    }
+
+    // Safety Force Redirect: If view is NOT 'super_admin' but role requires it, force redirect.
+    // This catches "customer" fallback or any other state.
+    if (user && (user.role === 'admin' || user.role === 'office_owner') && view !== 'super_admin') {
+      setView('super_admin', false);
+    }
 
     // Set initial state
     window.history.replaceState({ view: view }, '', window.location.pathname);
 
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [user]); // Re-bind if user changes substantially, though mainly stable
+  }, [user, view]);
 
   const [registerRole, setRegisterRole] = useState('customer');
   const [loginRole, setLoginRole] = useState(''); // 'admin' | 'customer' | ''
@@ -2127,7 +2666,10 @@ function App() {
         if (user.is_verified === 0) {
           setView('verify-email', false);
         } else {
-          setView(user.role === 'admin' ? 'admin' : 'customer', false);
+          const targetView = user.role === 'office_owner' ? 'super_admin' :
+            user.role === 'staff' ? 'staff' :
+              'customer';
+          setView(targetView, false);
         }
       } else if (view !== 'verify-email' && user.is_verified === 0) {
         setView('verify-email', false);
@@ -2195,19 +2737,20 @@ function App() {
   const loadOffices = async () => {
     try {
       setLoading(true);
-      const endpoint = (user?.role === 'admin') ? '/api/offices?owner=me' : '/api/offices';
+      // Office Owner sees only their offices
+      const endpoint = (user?.role === 'admin' || user?.role === 'office_owner') ? '/api/offices?owner=me' : '/api/offices';
       const data = await fetchJSON(endpoint);
       setOffices(data.offices);
-      // Auto-select first office for Admin to show dashboard immediately
-      if (user?.role === 'admin') {
+
+      // Auto-select for Admin/Owner
+      if (['admin', 'office_owner'].includes(user?.role)) {
         if (data.offices.length > 0) {
           setSelectedOfficeId(data.offices[0].id);
         } else if (user.is_verified) {
-          // Redirect to create office if none exist and Verified
           setView('create-office');
         }
-      } else if (!selectedOfficeId && data.offices.length > 0 && user?.role !== 'admin') {
-        // for customers, maybe don't auto select or keep existing logic
+      } else if (!selectedOfficeId && data.offices.length > 0 && !['admin', 'office_owner'].includes(user?.role)) {
+        // Default for customer
         setSelectedOfficeId(data.offices[0].id);
       }
     } catch (err) { setMessage(err.message); } finally { setLoading(false); }
@@ -2270,12 +2813,13 @@ function App() {
   };
 
   const handleAvailabilityUpdate = async () => {
-    if (!adminKey) return setMessage('Admin key required');
+    // Availability update is strictly an Owner/Admin action. 
+    // If user is owner, they have a token. If legacy admin, they have a key.
+    // Ideally we assume token-based auth for owners now.
     try {
-      // Use config endpoint to update counter_count (Availability)
       await fetchJSON(`/api/offices/${selectedOfficeId}/config`, {
         method: 'POST',
-        headers: { 'x-admin-key': adminKey },
+        headers: adminKey ? { 'x-admin-key': adminKey } : {}, // Optional legacy support
         body: JSON.stringify({ counterCount: Number(availabilityInput) }),
       });
       setMessage('Availability updated');
@@ -2284,11 +2828,12 @@ function App() {
   };
 
   const callNext = async () => {
-    if (!adminKey) return setMessage('Admin key required');
+    // Used by Admin/Owner main button
     try {
+      const headers = adminKey ? { 'x-admin-key': adminKey } : {};
       const data = await fetchJSON(`/api/offices/${selectedOfficeId}/call-next`, {
         method: 'POST',
-        headers: { 'x-admin-key': adminKey },
+        headers
       });
       setMessage(`Called ${data.user_name}`);
       fetchOfficeDetail(selectedOfficeId);
@@ -2297,7 +2842,11 @@ function App() {
 
   const updateToken = async (id, action) => {
     try {
-      let headers = action !== 'cancel' ? { 'x-admin-key': adminKey } : {};
+      // Staff and Owners use Token Auth (handled by fetchJSON automatically).
+      // Legacy Admin uses Admin Key.
+      let headers = {};
+      if (adminKey) headers['x-admin-key'] = adminKey;
+
       await fetchJSON(`/api/tokens/${id}/${action}`, { method: 'POST', headers });
 
       const verbs = {
@@ -2314,11 +2863,14 @@ function App() {
   };
 
   const callCounter = async (counterId) => {
-    if (!adminKey) return setMessage('Admin key required');
+    // Staff action - uses Token.
     try {
+      let headers = {};
+      if (adminKey) headers['x-admin-key'] = adminKey;
+
       const data = await fetchJSON(`/api/offices/${selectedOfficeId}/counters/${counterId}/call`, {
         method: 'POST',
-        headers: { 'x-admin-key': adminKey },
+        headers
       });
       setMessage(`Counter ${counterId} Called ${data.user_name}`);
       fetchOfficeDetail(selectedOfficeId);
@@ -2326,24 +2878,26 @@ function App() {
   };
 
   const handlePauseToggle = async () => {
-    if (!adminKey) return setMessage('Admin key required');
+    // Owner action - uses Token.
+    try {
+      let headers = {};
+      if (adminKey) headers['x-admin-key'] = adminKey;
 
-    if (selectedOffice.is_paused) {
-      // Resume Logic
-      try {
+      if (selectedOffice.is_paused) {
+        // Resume Logic
         await fetchJSON(`/api/offices/${selectedOfficeId}/resume`, {
           method: 'POST',
-          headers: { 'x-admin-key': adminKey }
+          headers
         });
         setMessage('Queue Resumed');
         fetchOfficeDetail(selectedOfficeId);
-      } catch (err) { setMessage(err.message); }
-    } else {
-      // Open Pause Modal
-      setPauseReason('Short Break');
-      setPauseMessage('Service paused for a short break. We will resume shortly.');
-      setShowPauseModal(true);
-    }
+      } else {
+        // Open Pause Modal
+        setPauseReason('Short Break');
+        setPauseMessage('Service paused for a short break. We will resume shortly.');
+        setShowPauseModal(true);
+      }
+    } catch (err) { setMessage(err.message); }
   };
 
   const submitPause = async () => {
@@ -2370,36 +2924,14 @@ function App() {
             setLoginRole(role);
             setView('login');
           }}
-          onRegisterAdmin={() => { setRegisterRole('admin'); setView('register'); }}
+          onRegisterAdmin={() => { setRegisterRole('office_owner'); setView('register'); }}
           onRegisterCustomer={() => { setRegisterRole('customer'); setView('register'); }}
         />
       </>
     );
   }
 
-  if (view === 'settings') {
-    return (
-      <>
-        <header className="app-header">
-          <div className="eyebrow">Settings</div>
-          <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
-        </header>
-        <SettingsView user={user} onBack={() => setView('admin')} adminKey={adminKey} selectedOfficeId={selectedOfficeId} />
-      </>
-    );
-  }
 
-  if (view === 'history') {
-    return (
-      <>
-        <header className="app-header">
-          <div className="eyebrow">Archives</div>
-          <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
-        </header>
-        <HistoryView user={user} onBack={() => setView('admin')} adminKey={adminKey} selectedOfficeId={selectedOfficeId} />
-      </>
-    );
-  }
 
   // Admin / Customer Dashboard
   const showHeader = !['login', 'register', 'verify-email', 'forgot-password', 'reset-password'].includes(view);
@@ -2445,7 +2977,7 @@ function App() {
             setLoginRole(role);
             setView('login');
           }}
-          onRegisterAdmin={() => { setRegisterRole('admin'); setView('register'); }}
+          onRegisterAdmin={() => { setRegisterRole('office_owner'); setView('register'); }}
           onRegisterCustomer={() => { setRegisterRole('customer'); setView('register'); }}
         />
       ) : view === 'login' || (!user && view !== 'register' && view !== 'forgot-password' && view !== 'reset-password') ? (
@@ -2505,15 +3037,32 @@ function App() {
           onBack={() => setView(user.role === 'admin' ? 'admin' : 'customer')}
           office={user.role === 'admin' ? offices[0] : null}
         />
+      ) : view === 'history' ? (
+        <>
+          <header className="app-header">
+            <div className="eyebrow">Archives</div>
+            <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
+          </header>
+          <HistoryView
+            user={user}
+            onBack={() => setView(user.role === 'office_owner' ? 'super_admin' : 'staff')}
+            adminKey={adminKey}
+            selectedOfficeId={selectedOfficeId}
+          />
+        </>
       ) : view === 'settings' ? (
-        <SettingsView onBack={() => setView(user.role === 'admin' ? 'admin' : 'customer')} />
+        <SettingsView user={user} onBack={() => setView('super_admin')} adminKey={adminKey} selectedOfficeId={selectedOfficeId} />
+      ) : view === 'super_admin' ? (
+        <SuperAdminDashboard user={user} office={selectedOffice} onLogout={logout} onNavigate={setView} />
+      ) : view === 'staff' ? (
+        <StaffDashboard user={user} office={selectedOffice} tokens={selectedOfficeData?.tokens || []} onCall={callCounter} onUpdateToken={updateToken} onLogout={logout} />
       ) : (
+        /* --- CUSTOMER DASHBOARD (Fallback) --- */
         <div className="dashboard-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 300px) 1fr', gap: '24px', alignItems: 'start' }}>
           <StatusBanner office={selectedOffice} />
           <aside className="card" style={{ padding: '24px', height: 'fit-content' }}>
             <div className="view-toggle" style={{ marginBottom: 20 }}>
-              {/* Role-based: show only relevant view or both if dual-role (simplified to strict separation) */}
-              <div style={{ textTransform: 'uppercase', fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary-600)', letterSpacing: '0.05em' }}>Logged in as {user.role}</div>
+              <div style={{ textTransform: 'uppercase', fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary-600)', letterSpacing: '0.05em' }}>Logged in as Customer</div>
             </div>
 
             <div className="panel-header">
@@ -2521,9 +3070,9 @@ function App() {
               <button className="ghost" onClick={loadOffices} disabled={loading}>Refresh</button>
             </div>
             {loading && <div className="muted">Loading...</div>}
+
             <div className="office-list">
-              {/* Only show office list for Customers, or if Admin has multiple (optional, but requested to hide 'left section' details) */}
-              {user?.role !== 'admin' && offices.map((office) => (
+              {offices.map((office) => (
                 <button
                   key={office.id}
                   className={`office-card ${selectedOfficeId === office.id ? 'selected' : ''}`}
@@ -2537,118 +3086,47 @@ function App() {
                   </div>
                 </button>
               ))}
-              {user?.role === 'admin' && offices.length === 0 && (
+              {offices.length === 0 && (
                 <div style={{ padding: '20px', textAlign: 'center', color: 'var(--gray-500)' }}>
-                  You need to create an office to get started.
+                  No offices found near you.
                 </div>
               )}
-              {user?.role === 'admin' && offices.map((office) => (
-                // Admin sees only their own offices, simplified view or just auto-selected. 
-                // Request says "don't show it", implies singular focus.
-                // We will show a simple list if they have multiple, but likely just one.
-                <button
-                  key={office.id}
-                  className={`office-card ${selectedOfficeId === office.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedOfficeId(office.id)}
-                >
-                  <div className="office-name">{office.name} (Your Office)</div>
-                  <div className="office-meta">
-                    <span>Queue: {office.queueCount || 0}</span>
-                  </div>
-                </button>
-              ))}
             </div>
-
-            {view === 'admin' && (
-              <>
-                {/* REMOVED Create Office Form from Sidebar */}
-                {/* Only History remains */}
-                <div className="panel-section">
-                  <h4>History</h4>
-                  <button onClick={() => setView('history')} className="ghost">View Token History</button>
-                </div>
-              </>
-            )}
           </aside>
 
           <main style={{ display: 'flex', flexDirection: 'column' }}>
-            {showHistory && view === 'admin' ? (
-              <div className="card history-view">
-                <div className="panel-header">
-                  <h3>Token History</h3>
-                  <button className="btn btn-ghost" onClick={() => setShowHistory(false)}>Close</button>
-                </div>
-                <div className="token-list">
-                  {historyTokens.length === 0 && <div className="muted" style={{ padding: 20 }}>No archived tokens found.</div>}
-                  {historyTokens.map(t => (
-                    <div key={t.id} className="token-row" style={{ opacity: 0.8 }}>
-                      <div>
-                        <div className="token-label">#{t.token_number} - {t.user_name}</div>
-                        <div className="token-meta">
-                          {new Date(t.created_at).toLocaleDateString()} · {t.service_type} · {t.status}
-                        </div>
-                      </div>
-                      <div className="token-actions">
-                        <span className="token-chip">{new Date(t.archived_at).toLocaleDateString()}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : !selectedOffice ? <div className="muted">Select office</div> : (
+            {!selectedOffice ? <div className="muted">Select an office to book</div> : (
               <>
                 <section className="card" style={{ marginBottom: '24px' }}>
                   <div className="panel-header">
                     <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                       <h3 style={{ fontSize: '1.5rem', letterSpacing: '-0.02em' }}>{selectedOffice.name}</h3>
-                      {view === 'admin' && (
-                        <span className={`chip ${selectedOffice.is_paused ? 'chip-warning' : 'chip-success'}`}>
-                          <span className="chip-dot" />
-                          {selectedOffice.is_paused ? 'Paused' : 'Live'}
-                        </span>
-                      )}
                     </div>
                     <div className="stat-group">
-                      {view === 'admin' && (
-                        <button className="btn btn-ghost small" onClick={() => setView('history')} style={{ marginRight: 'auto' }}>View Archives</button>
-                      )}
-                      {view === 'admin' ? (
-                        <Stat label="Current Token" value={
-                          (selectedOfficeData?.tokens || [])
-                            .filter(t => t.status === 'called')
-                            .sort((a, b) => (new Date(b.called_at || 0) - new Date(a.called_at || 0)))[0]?.token_number || '--'
-                        } />
-                      ) : (
-                        <Stat label="Wait" value={
-                          (selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes)) > 0
-                            ? `${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))}m`
-                            : 'Access Allowed'
-                        } />
-                      )}
+                      <Stat label="Wait" value={
+                        (selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes)) > 0
+                          ? `${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))}m`
+                          : 'Access Allowed'
+                      } />
                       <Stat label="Avail" value={selectedOffice.available_today} />
-                      {view === 'admin' && (
-                        <Stat label="Velocity" value={`${Math.round((selectedOffice.counter_count || 1) / (selectedOffice.average_velocity || 5))} t/m`} />
-                      )}
                     </div>
                   </div>
                 </section>
 
-                {view === 'customer' && (
-                  <section className="card" style={{ marginBottom: '24px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <h4 style={{ fontSize: '1.5rem', marginBottom: '8px' }}>Book a Slot</h4>
-                        <p style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>
-                          {selectedOffice.available_today > 0
-                            ? "We're open! Book now to skip the line."
-                            : `Current estimated wait is ${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))} mins. We'll notify you.`
-                          }
-                        </p>
-                      </div>
-                      <button className="btn btn-primary" onClick={() => setIsBookingModalOpen(true)}>Book Now</button>
+                <section className="card" style={{ marginBottom: '24px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <div>
+                      <h4 style={{ fontSize: '1.5rem', marginBottom: '8px' }}>Book a Slot</h4>
+                      <p style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>
+                        {selectedOffice.available_today > 0
+                          ? "We're open! Book now to skip the line."
+                          : `Current estimated wait is ${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))} mins. We'll notify you.`
+                        }
+                      </p>
                     </div>
-                  </section>
-                )}
+                    <button className="btn btn-primary" onClick={() => setIsBookingModalOpen(true)}>Book Now</button>
+                  </div>
+                </section>
 
                 <BookingModal
                   isOpen={isBookingModalOpen}
@@ -2658,186 +3136,61 @@ function App() {
                   user={user}
                 />
 
-                {view === 'admin' && (
-                  <section className="card" style={{ marginBottom: '24px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-                      <h4 style={{ fontSize: '1.1rem', margin: 0 }}>Admin Controls</h4>
-                      {/* Spectator Count Badge */}
-                      <span className="badge badge-neutral">
-                        Spectators Waiting: {counters.filter(s => s.role === 'SPECTATOR').length}
-                      </span>
-                    </div>
-
-                    <div className="admin-controls-grid">
-                      {/* Left Side: Keys & Info */}
-                      <div className="grid-2" style={{ marginBottom: '16px' }}>
-                        <div className="input-group" style={{ position: 'relative' }}>
-                          <span className="input-label">Admin Key</span>
-                          <div style={{ position: 'relative' }}>
-                            <input
-                              className="input-field"
-                              type={showAdminKey ? 'text' : 'password'}
-                              value={adminKey}
-                              onChange={e => setAdminKey(e.target.value)}
-                              placeholder="••••"
-                              style={{ paddingRight: '40px' }}
-                            />
-                            <button
-                              className="btn btn-ghost"
-                              onClick={() => setShowAdminKey(!showAdminKey)}
-                              style={{ position: 'absolute', right: '4px', top: '50%', transform: 'translateY(-50%)', padding: '4px 8px' }}
-                            >
-                              {showAdminKey ? 'Hide' : 'Show'}
-                            </button>
-                          </div>
-                        </div>
-                        {/* More meta info or empty for spacing */}
-                        <div className="input-group">
-                          <span className="input-label">My Role</span>
-                          <div className={`badge ${user.operational_role === 'OPERATOR' ? 'badge-primary' : 'badge-warning'}`} style={{ marginTop: '8px', display: 'inline-flex' }}>
-                            {user.operational_role} {user.operational_role === 'OPERATOR' && `#${user.assigned_counter}`}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Right Side: Actions */}
-                      <div className="flex gap-2" style={{ display: 'flex', gap: '12px' }}>
-                        {user.operational_role === 'OPERATOR' ? (
-                          <>
-                            {/* Call Next (Locked to Assigned Counter) */}
-                            <button
-                              onClick={callNext}
-                              disabled={selectedOffice.state !== 'LIVE' || (selectedOfficeData?.tokens || []).filter(t => t.status === 'CALLED' && t.called_by_counter === user.assigned_counter).length > 0}
-                              className="btn btn-primary"
-                              style={{ opacity: selectedOffice.state !== 'LIVE' ? 0.5 : 1 }}
-                            >
-                              Call Next (Counter {user.assigned_counter})
-                            </button>
-
-                            {/* Pause / Resume Button */}
-                            {selectedOffice.state === 'LIVE' ? (
-                              <button onClick={() => setIsPauseModalOpen(true)} className="btn btn-secondary" style={{ borderColor: '#fcd34d', background: '#fffbeb', color: '#92400e' }}>
-                                Pause
-                              </button>
-                            ) : (
-                              <button onClick={handleResume} className="btn btn-primary" style={{ background: '#16a34a', borderColor: '#16a34a' }}>
-                                Resume Operations
-                              </button>
-                            )}
-                          </>
-                        ) : (
-                          <div style={{ padding: '12px', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '8px', color: '#92400e', width: '100%' }}>
-                            <strong>Spectator Mode:</strong> All counters are currently busy. You will be automatically promoted when a counter becomes free.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Counter Grid */}
-                    <div style={{ marginTop: '24px' }}>
-                      <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Active Counters</h4>
-                      <div className="counter-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
-                        {Array.from({ length: selectedOffice.counter_count || 1 }, (_, i) => i + 1).map(cId => {
-                          const staffMember = counters.find(s => s.role === 'OPERATOR' && s.counter_number === cId);
-                          const isMyCounter = user.operational_role === 'OPERATOR' && user.assigned_counter === cId;
-
-                          return (
-                            <AdminCounterCard
-                              key={cId}
-                              counterId={cId}
-                              tokens={selectedOfficeData?.tokens || []}
-                              onCall={callCounter} // This now maps to specific counter call
-                              state={selectedOffice.state}
-                              adminName={staffMember ? staffMember.name : 'Empty'}
-                              isAssigned={isMyCounter}
-                            />
-                          );
-                        })}
-                      </div>
-                    </div>
-                  </section>
-                )}
-
                 <section className="card">
-                  <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>
-                    {view === 'customer' ? 'Your Visit Status' : 'Live Queue Operations'}
-                  </h4>
-                  {/* Enable tabs for both customer and admin */}
-                  {(view === 'customer' || view === 'admin') && (
-                    <div className="tabs" style={{ display: 'flex', gap: '8px', marginBottom: '20px', background: 'var(--gray-50)', padding: '4px', borderRadius: 'var(--radius-md)', width: 'fit-content' }}>
-                      <button
-                        className="btn"
-                        style={{
-                          padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
-                          background: tokenFilter === 'pending' ? 'white' : 'transparent',
-                          color: tokenFilter === 'pending' ? 'var(--primary-600)' : 'var(--text-muted)',
-                          boxShadow: tokenFilter === 'pending' ? 'var(--shadow-sm)' : 'none'
-                        }}
-                        onClick={() => setTokenFilter('pending')}
-                      >
-                        Pending
-                      </button>
-                      <button
-                        className="btn"
-                        style={{
-                          padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
-                          background: tokenFilter === 'completed' ? 'white' : 'transparent',
-                          color: tokenFilter === 'completed' ? 'var(--primary-600)' : 'var(--text-muted)',
-                          boxShadow: tokenFilter === 'completed' ? 'var(--shadow-sm)' : 'none'
-                        }}
-                        onClick={() => setTokenFilter('completed')}
-                      >
-                        Completed
-                      </button>
-                      <button
-                        className="btn"
-                        style={{
-                          padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
-                          background: tokenFilter === 'cancelled' ? 'white' : 'transparent',
-                          color: tokenFilter === 'cancelled' ? 'var(--primary-600)' : 'var(--text-muted)',
-                          boxShadow: tokenFilter === 'cancelled' ? 'var(--shadow-sm)' : 'none'
-                        }}
-                        onClick={() => setTokenFilter('cancelled')}
-                      >
-                        Cancelled
-                      </button>
-                    </div>
-                  )}
+                  <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Your Visit Status</h4>
+                  <div className="tabs" style={{ display: 'flex', gap: '8px', marginBottom: '20px', background: 'var(--gray-50)', padding: '4px', borderRadius: 'var(--radius-md)', width: 'fit-content' }}>
+                    <button
+                      className="btn"
+                      style={{
+                        padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
+                        background: tokenFilter === 'pending' ? 'white' : 'transparent',
+                        color: tokenFilter === 'pending' ? 'var(--primary-600)' : 'var(--text-muted)',
+                        boxShadow: tokenFilter === 'pending' ? 'var(--shadow-sm)' : 'none'
+                      }}
+                      onClick={() => setTokenFilter('pending')}
+                    >
+                      Pending
+                    </button>
+                    <button
+                      className="btn"
+                      style={{
+                        padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
+                        background: tokenFilter === 'completed' ? 'white' : 'transparent',
+                        color: tokenFilter === 'completed' ? 'var(--primary-600)' : 'var(--text-muted)',
+                        boxShadow: tokenFilter === 'completed' ? 'var(--shadow-sm)' : 'none'
+                      }}
+                      onClick={() => setTokenFilter('completed')}
+                    >
+                      History
+                    </button>
+                  </div>
+
                   <div className="token-list">
                     {(selectedOfficeData?.tokens || [])
                       .filter(t => {
-                        // Admin sees all users, Customer sees only theirs
-                        if (view === 'customer') {
-                          const isMine = t.user_id === user?.id;
-                          if (!isMine) return false;
-                        }
+                        // Customer sees only theirs
+                        const isMine = t.user_id === user?.id;
+                        if (!isMine) return false;
 
-                        // Apply status filter for both
+                        // Apply status filter
                         if (tokenFilter === 'pending') return ['WAIT', 'ALLOCATED', 'CALLED', 'booked', 'queued', 'called'].includes(t.status);
-                        if (tokenFilter === 'completed') return ['COMPLETED', 'completed'].includes(t.status);
-                        if (tokenFilter === 'cancelled') return ['cancelled', 'no-show', 'history'].includes(t.status);
+                        // Show history/cancelled/complete in History tab
+                        if (tokenFilter === 'completed') return ['COMPLETED', 'completed', 'cancelled', 'no-show', 'history'].includes(t.status);
                         return false;
                       })
                       .map(t => {
-                        if (view === 'admin') {
-                          return (
-                            <AdminTokenRow key={t.id} token={t} onComplete={id => updateToken(id, 'complete')} onNoShow={id => updateToken(id, 'no-show')} onCancel={id => updateToken(id, 'cancel')} onReQueue={id => updateToken(id, 're-queue')} onSelect={setSelectedToken} />
-                          );
-                        } else {
-                          return (
-                            <CustomerTokenRow key={t.id} token={t} onCancel={id => updateToken(id, 'cancel')} onArrive={id => updateToken(id, 'arrive')} isOwner={t.user_id === user?.id} office={selectedOffice} />
-                          );
-                        }
+                        return (
+                          <CustomerTokenRow key={t.id} token={t} onCancel={id => updateToken(id, 'cancel')} onArrive={id => updateToken(id, 'arrive')} isOwner={true} office={selectedOffice} />
+                        );
                       })}
                     {selectedToken && (
                       <TokenDetailsModal token={selectedToken} office={selectedOffice} onClose={() => setSelectedToken(null)} onAction={updateToken} />
                     )}
-                    {view === 'customer' && (selectedOfficeData?.tokens || []).filter(t => {
+                    {(selectedOfficeData?.tokens || []).filter(t => {
                       const isMine = t.user_id === user?.id;
                       if (!isMine) return false;
                       if (tokenFilter === 'pending') return ['WAIT', 'ALLOCATED', 'CALLED', 'booked', 'queued', 'called'].includes(t.status);
-                      if (tokenFilter === 'completed') return ['COMPLETED', 'completed'].includes(t.status);
-                      if (tokenFilter === 'cancelled') return ['cancelled', 'no-show', 'history'].includes(t.status);
+                      if (tokenFilter === 'completed') return ['COMPLETED', 'completed', 'cancelled', 'no-show', 'history'].includes(t.status);
                       return false;
                     }).length === 0 && (
                         <div className="empty-state">
