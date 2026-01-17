@@ -4,6 +4,16 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './App.css';
 import { useAuth } from './AuthContext';
+import { Header } from './components/landing/Header';
+import { Hero } from './components/landing/Hero';
+import { QuickAccess } from './components/landing/QuickAccess';
+import { Stats } from './components/landing/Stats';
+import { Features } from './components/landing/Features';
+import { About } from './components/landing/About';
+import { Footer } from './components/landing/Footer';
+import { StaffLoginView } from './components/auth/StaffLoginView';
+import { OwnerLoginView } from './components/auth/OwnerLoginView';
+import { CustomerLoginView } from './components/auth/CustomerLoginView';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
   const [form, setForm] = useState({ name: '', serviceType: '', dailyCapacity: 100, operatingHours: '09:00-17:00', avgServiceMinutes: 10, counterCount: 1 });
@@ -1040,61 +1050,28 @@ function FAQsDropdown() {
 }
 
 // Landing View Component
+// Landing View Component
 function LandingView({ onLogin, onRegisterAdmin, onRegisterCustomer }) {
+  // Functions to handle quick access clicks by mapping roles to view states or register actions
+  const handleQuickLogin = (role) => {
+    onLogin(role);
+  };
+
+  const handleQuickRegister = (role) => {
+    if (role === 'office_owner') onRegisterAdmin();
+    else if (role === 'customer') onRegisterCustomer();
+  };
+
   return (
-    <div className="landing-container">
-      <header className="landing-header">
-        <div className="nav-links">
-          <AboutDropdown />
-          <ContactDropdown />
-          <FAQsDropdown />
-        </div>
-
-        <div className="brand-center">
-          <span style={{ fontWeight: 800 }}>GetEzi</span>
-          <span style={{ fontSize: '12px', verticalAlign: 'top', marginLeft: '2px', transform: 'scale(2)', position: 'relative', left: '10px', top: '-3px' }}>🌱</span>
-        </div>
-
-        <div className="landing-nav">
-          <button className="login-outline-btn" onClick={() => onLogin()}>Log in</button>
-        </div>
-      </header>
-
-      <div className="landing-content">
-        <div className="landing-card">
-          <div className="card-text-group">
-            <h2>For <i>Office Owners</i></h2>
-            <p>Manage your staff, monitor queues, and analyze performance.</p>
-          </div>
-          <button className="login-black-btn" onClick={() => onLogin('office_owner')}>Login</button>
-          <div className="signup-prompt">
-            Don't have an account? <span onClick={onRegisterAdmin} className="link">Sign up.</span>
-          </div>
-        </div>
-
-        <div className="landing-card">
-          <div className="card-text-group">
-            <h2>For <i>Staff</i></h2>
-            <p>Access your counter and manage daily operations.</p>
-          </div>
-          <button className="login-black-btn" onClick={() => onLogin('staff')}>Login</button>
-          <div className="signup-prompt">
-            <span className="text-muted" style={{ fontSize: '0.8rem' }}>Contact your manager for credentials.</span>
-          </div>
-        </div>
-
-        <div className="landing-card">
-          <div className="card-text-group">
-            <h2>For <i>Customers</i></h2>
-            <p>Join us and experience smoother services, every step of the way.</p>
-          </div>
-          <button className="login-black-btn" onClick={() => onLogin('customer')}>Login</button>
-          <div className="signup-prompt">
-            Don't have an account? <span onClick={onRegisterCustomer} className="link">Sign up.</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <main className="min-h-screen bg-background">
+      <Header />
+      <Hero />
+      <QuickAccess onLogin={handleQuickLogin} onRegister={handleQuickRegister} />
+      <Stats />
+      <Features />
+      <About />
+      <Footer />
+    </main>
   );
 }
 
@@ -2979,6 +2956,42 @@ function App() {
           }}
           onRegisterAdmin={() => { setRegisterRole('office_owner'); setView('register'); }}
           onRegisterCustomer={() => { setRegisterRole('customer'); setView('register'); }}
+        />
+      ) : view === 'login' && loginRole === 'office_owner' ? (
+        <OwnerLoginView
+          onSuccess={() => { }}
+          onBack={() => setView('landing')}
+          onForgotPass={() => setView('forgot-password')}
+          onSignup={() => {
+            setRegisterRole('office_owner');
+            setView('register');
+          }}
+        />
+      ) : view === 'login' && loginRole === 'staff' ? (
+        <StaffLoginView
+          onSuccess={() => { }}
+          onBack={() => setView('landing')}
+          onForgotPass={() => setView('forgot-password')}
+        />
+      ) : view === 'login' && loginRole === 'customer' ? (
+        <CustomerLoginView
+          onSuccess={() => { }}
+          onBack={() => setView('landing')}
+          onForgotPass={() => setView('forgot-password')}
+          onSignup={() => {
+            setRegisterRole('customer');
+            setView('register');
+          }}
+          onQuickJoin={() => {
+            // Assuming there's a quick-join view, if not existing, we can placeholder it or set a view
+            // For now, let's assume 'landing' or show a message, but based on context user might want a specific view.
+            // Looking at App.jsx, there's no obvious quick-join. I will just log or no-op for now unless I see a view.
+            // Actually, I can setView('quick-join') if I implement it, or just leave it blank.
+            // Let's check if 'quick-join' view exists in App.jsx... it doesn't seem to.
+            // I'll map it to setView('landing') for now as a placeholder or maybe alert.
+            // Better: define onQuickJoin to log for now.
+            console.log("Quick join clicked");
+          }}
         />
       ) : view === 'login' || (!user && view !== 'register' && view !== 'forgot-password' && view !== 'reset-password') ? (
         <LoginView
