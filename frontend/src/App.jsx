@@ -15,6 +15,7 @@ import { StaffLoginView } from './components/auth/StaffLoginView';
 import { OwnerLoginView } from './components/auth/OwnerLoginView';
 import { OwnerRegistrationWizard } from './components/auth/OwnerRegistrationWizard';
 import { CustomerLoginView } from './components/auth/CustomerLoginView';
+import CustomerPortal from './components/dashboard/CustomerPortal';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
   const [form, setForm] = useState({
@@ -3192,6 +3193,30 @@ function App() {
   // Admin / Customer Dashboard
   const showHeader = !['login', 'register', 'verify-email', 'forgot-password', 'reset-password'].includes(view);
 
+  // --- EARLY RETURN FOR CUSTOMER PORTAL (Full Screen) ---
+  const isCustomerPortal = (view === 'customer' || (!view && user?.role === 'customer'));
+  if (user && isCustomerPortal) {
+    return (
+      <>
+        {connectionStatus === 'LOST' && (
+          <div style={{ backgroundColor: '#dc3545', color: 'white', padding: '10px', textAlign: 'center', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 1000 }}>
+            Connection Lost — Reconnecting...
+          </div>
+        )}
+        {message && <div className="message">{message}</div>}
+        <CustomerPortal
+          user={user}
+          onLogout={logout}
+          onRefresh={() => { loadOffices(); fetchOfficeDetail(selectedOfficeId); }}
+          office={selectedOffice}
+          availableOffices={offices}
+          onOfficeSelect={setSelectedOfficeId}
+          onBook={handleBookingSubmit}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="app">
       {connectionStatus === 'LOST' && (
@@ -3366,165 +3391,7 @@ function App() {
       ) : view === 'staff' && (user?.role === 'staff' || user?.role === 'office_owner') ? (
         <StaffDashboard user={user} office={selectedOffice} tokens={selectedOfficeData?.tokens || []} onCall={callCounter} onUpdateToken={updateToken} onLogout={logout} />
       ) : (view === 'customer' || (!view && user?.role === 'customer')) ? (
-        /* --- CUSTOMER DASHBOARD (Fallback) --- */
-        <div className="dashboard-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 300px) 1fr', gap: '24px', alignItems: 'start' }}>
-          <StatusBanner office={selectedOffice} />
-          <aside className="card" style={{ padding: '24px', height: 'fit-content' }}>
-            <div className="view-toggle" style={{ marginBottom: 20 }}>
-              <div style={{ textTransform: 'uppercase', fontSize: '0.75rem', fontWeight: 'bold', color: 'var(--primary-600)', letterSpacing: '0.05em' }}>Logged in as Customer</div>
-            </div>
-
-            <div className="panel-header">
-              <h3>Offices</h3>
-              <button className="ghost" onClick={loadOffices} disabled={loading}>Refresh</button>
-            </div>
-            {loading && <div className="muted">Loading...</div>}
-
-            <div className="office-list">
-              {offices.map((office) => (
-                <button
-                  key={office.id}
-                  className={`office-card ${selectedOfficeId === office.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedOfficeId(office.id)}
-                >
-                  <div className="office-name">{office.name}</div>
-                  <div className="office-service">{office.service_type}</div>
-                  <div className="office-meta">
-                    <span>Avail: {office.available_today}</span>
-                    <span>Queue: {office.queueCount}</span>
-                  </div>
-                </button>
-              ))}
-              {offices.length === 0 && (
-                <div style={{ padding: '20px', textAlign: 'center', color: 'var(--gray-500)' }}>
-                  No offices found near you.
-                </div>
-              )}
-            </div>
-          </aside>
-
-          <main style={{ display: 'flex', flexDirection: 'column' }}>
-            {!selectedOffice ? <div className="muted">Select an office to book</div> : (
-              <>
-                <section className="card" style={{ marginBottom: '24px' }}>
-                  <div className="panel-header">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                      <h3 style={{ fontSize: '1.5rem', letterSpacing: '-0.02em' }}>{selectedOffice.name}</h3>
-                    </div>
-                    <div className="stat-group">
-                      <Stat label="Wait" value={
-                        (selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes)) > 0
-                          ? `${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))}m`
-                          : 'Access Allowed'
-                      } />
-                      <Stat label="Avail" value={selectedOffice.available_today} />
-                    </div>
-                  </div>
-                </section>
-
-                <section className="card" style={{ marginBottom: '24px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <h4 style={{ fontSize: '1.5rem', marginBottom: '8px' }}>Book a Slot</h4>
-                      <p style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>
-                        {selectedOffice.current_status === 'CLOSED' ? (
-                          <span style={{ color: 'var(--red-500)' }}>We are currently closed. Opens at {selectedOffice.opening_time}.</span>
-                        ) : selectedOffice.current_status === 'LUNCH_BREAK' ? (
-                          <span style={{ color: 'var(--orange-500)' }}>Lunch Break. Resumes at {selectedOffice.lunch_end}.</span>
-                        ) : selectedOffice.available_today > 0 ? (
-                          "We're open! Book now to skip the line."
-                        ) : (
-                          `Current estimated wait is ${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))} mins. We'll notify you.`
-                        )}
-                      </p>
-                    </div>
-                    <button
-                      className="btn btn-primary"
-                      onClick={() => setIsBookingModalOpen(true)}
-                      disabled={selectedOffice.current_status === 'CLOSED'}
-                      style={{ opacity: selectedOffice.current_status === 'CLOSED' ? 0.5 : 1 }}
-                    >
-                      {selectedOffice.current_status === 'CLOSED' ? 'Closed' : 'Book Now'}
-                    </button>
-                  </div>
-                </section>
-
-                <BookingModal
-                  isOpen={isBookingModalOpen}
-                  onClose={() => setIsBookingModalOpen(false)}
-                  onSubmit={handleBookingSubmit}
-                  office={selectedOffice}
-                  user={user}
-                />
-
-                <section className="card">
-                  <h4 style={{ fontSize: '1.1rem', marginBottom: '16px' }}>Your Visit Status</h4>
-                  <div className="tabs" style={{ display: 'flex', gap: '8px', marginBottom: '20px', background: 'var(--gray-50)', padding: '4px', borderRadius: 'var(--radius-md)', width: 'fit-content' }}>
-                    <button
-                      className="btn"
-                      style={{
-                        padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
-                        background: tokenFilter === 'pending' ? 'white' : 'transparent',
-                        color: tokenFilter === 'pending' ? 'var(--primary-600)' : 'var(--text-muted)',
-                        boxShadow: tokenFilter === 'pending' ? 'var(--shadow-sm)' : 'none'
-                      }}
-                      onClick={() => setTokenFilter('pending')}
-                    >
-                      Pending
-                    </button>
-                    <button
-                      className="btn"
-                      style={{
-                        padding: '6px 16px', borderRadius: '8px', fontSize: '0.9rem',
-                        background: tokenFilter === 'completed' ? 'white' : 'transparent',
-                        color: tokenFilter === 'completed' ? 'var(--primary-600)' : 'var(--text-muted)',
-                        boxShadow: tokenFilter === 'completed' ? 'var(--shadow-sm)' : 'none'
-                      }}
-                      onClick={() => setTokenFilter('completed')}
-                    >
-                      History
-                    </button>
-                  </div>
-
-                  <div className="token-list">
-                    {(selectedOfficeData?.tokens || [])
-                      .filter(t => {
-                        // Customer sees only theirs
-                        const isMine = t.user_id === user?.id;
-                        if (!isMine) return false;
-
-                        // Apply status filter
-                        if (tokenFilter === 'pending') return ['WAIT', 'ALLOCATED', 'CALLED', 'booked', 'queued', 'called'].includes(t.status);
-                        // Show history/cancelled/complete in History tab
-                        if (tokenFilter === 'completed') return ['COMPLETED', 'completed', 'cancelled', 'no-show', 'history'].includes(t.status);
-                        return false;
-                      })
-                      .map(t => {
-                        return (
-                          <CustomerTokenRow key={t.id} token={t} onCancel={id => updateToken(id, 'cancel')} onArrive={id => updateToken(id, 'arrive')} isOwner={true} office={selectedOffice} />
-                        );
-                      })}
-                    {selectedToken && (
-                      <TokenDetailsModal token={selectedToken} office={selectedOffice} onClose={() => setSelectedToken(null)} onAction={updateToken} />
-                    )}
-                    {(selectedOfficeData?.tokens || []).filter(t => {
-                      const isMine = t.user_id === user?.id;
-                      if (!isMine) return false;
-                      if (tokenFilter === 'pending') return ['WAIT', 'ALLOCATED', 'CALLED', 'booked', 'queued', 'called'].includes(t.status);
-                      if (tokenFilter === 'completed') return ['COMPLETED', 'completed', 'cancelled', 'no-show', 'history'].includes(t.status);
-                      return false;
-                    }).length === 0 && (
-                        <div className="empty-state">
-                          <div style={{ fontSize: '2rem', marginBottom: '8px' }}>🌱</div>
-                          No tokens found in "{tokenFilter}" section.
-                        </div>
-                      )}
-                  </div>
-                </section>
-              </>
-            )}
-          </main>
-        </div>
+        <CustomerPortal user={user} onLogout={logout} onRefresh={() => { loadOffices(); fetchOfficeDetail(selectedOfficeId); }} office={selectedOffice} />
       ) : (
         <div className="flex-center" style={{ height: '60vh', flexDirection: 'column', gap: '20px' }}>
           <h2>Access Denied</h2>
