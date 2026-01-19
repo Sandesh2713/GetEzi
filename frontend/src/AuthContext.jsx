@@ -34,6 +34,11 @@ export function AuthProvider({ children }) {
     }, [token]);
 
     const login = async (email, password, adminKey) => {
+        // Clear old session first
+        sessionStorage.clear();
+        setToken(null);
+        setUser(null);
+
         const body = { email, password };
         if (adminKey) body.adminKey = adminKey;
 
@@ -44,13 +49,15 @@ export function AuthProvider({ children }) {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
+
+        // New Clean Session
         sessionStorage.setItem('token', data.token);
         setToken(data.token);
         setUser(data.user);
         return data.user;
     };
 
-    const register = async (name, email, password, phone, role, adminKey, dob, gender) => {
+    const register = async (name, email, password, phone, role, adminKey, dob, gender, officeDetails) => {
         const res = await fetch(`${API_BASE}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

@@ -16,18 +16,34 @@ import { OwnerLoginView } from './components/auth/OwnerLoginView';
 import { CustomerLoginView } from './components/auth/CustomerLoginView';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
-  const [form, setForm] = useState({ name: '', serviceType: '', dailyCapacity: 100, operatingHours: '09:00-17:00', avgServiceMinutes: 10, counterCount: 1 });
+  const [form, setForm] = useState({
+    name: '',
+    serviceType: '',
+    dailyCapacity: 100,
+    avgServiceMinutes: 10,
+    counterCount: 1,
+    // New Fields
+    address: '',
+    openingTime: '09:00',
+    closingTime: '17:00',
+    lunchStart: '',
+    lunchEnd: '',
+    autoNoShow: false
+  });
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-    await onSubmit(form);
+    await onSubmit({
+      ...form,
+      operatingHours: `${form.openingTime}-${form.closingTime}` // Legacy format support if needed, but we send specific fields too
+    });
     setLoading(false);
   };
 
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '100vh', padding: '20px' }}>
       <div className="card" style={{ width: '100%', maxWidth: '600px' }}>
         <h2 style={{ fontSize: '1.5rem', marginBottom: '8px' }}>Setup your Office</h2>
         <p style={{ marginBottom: '24px', color: 'var(--text-muted)' }}>Tell us about your organization to get started.</p>
@@ -42,21 +58,58 @@ function CreateOfficeWizard({ onSubmit, onBack }) {
               <input className="input-field" value={form.serviceType} onChange={e => setForm({ ...form, serviceType: e.target.value })} required placeholder="e.g. Consultation, X-Ray" />
             </label>
           </div>
+
+          <label className="input-group">
+            <span className="input-label">Address</span>
+            <textarea
+              className="input-field"
+              value={form.address}
+              onChange={e => setForm({ ...form, address: e.target.value })}
+              placeholder="Full address of the office..."
+              style={{ minHeight: '60px', fontFamily: 'inherit' }}
+            />
+          </label>
+
+          <div className="grid-2">
+            <label className="input-group">
+              <span className="input-label">Opening Time</span>
+              <input className="input-field" type="time" value={form.openingTime} onChange={e => setForm({ ...form, openingTime: e.target.value })} required />
+            </label>
+            <label className="input-group">
+              <span className="input-label">Closing Time</span>
+              <input className="input-field" type="time" value={form.closingTime} onChange={e => setForm({ ...form, closingTime: e.target.value })} required />
+            </label>
+          </div>
+
+          <div className="grid-2">
+            <label className="input-group">
+              <span className="input-label">Lunch Start (Optional)</span>
+              <input className="input-field" type="time" value={form.lunchStart} onChange={e => setForm({ ...form, lunchStart: e.target.value })} />
+            </label>
+            <label className="input-group">
+              <span className="input-label">Lunch End (Optional)</span>
+              <input className="input-field" type="time" value={form.lunchEnd} onChange={e => setForm({ ...form, lunchEnd: e.target.value })} />
+            </label>
+          </div>
+
+          <div style={{ marginBottom: '20px', padding: '12px', background: 'var(--gray-50)', borderRadius: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>Enable Auto No-Show</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Mark as no-show after 5 min grace</div>
+            </div>
+            <input type="checkbox" style={{ width: '20px', height: '20px' }} checked={form.autoNoShow} onChange={e => setForm({ ...form, autoNoShow: e.target.checked })} />
+          </div>
+
           <div className="grid-2">
             <label className="input-group">
               <span className="input-label">Avg Service Time (mins)</span>
               <input className="input-field" type="number" value={form.avgServiceMinutes} onChange={e => setForm({ ...form, avgServiceMinutes: e.target.value })} required />
             </label>
             <label className="input-group">
-              <span className="input-label">Operating Hours</span>
-              <input className="input-field" value={form.operatingHours} onChange={e => setForm({ ...form, operatingHours: e.target.value })} placeholder="09:00-17:00" required />
+              <span className="input-label">Daily Capacity (Est.)</span>
+              <input className="input-field" type="number" value={form.dailyCapacity} onChange={e => setForm({ ...form, dailyCapacity: e.target.value })} required />
             </label>
           </div>
-
-          <label className="input-group">
-            <span className="input-label">Daily Capacity (Est.)</span>
-            <input className="input-field" type="number" value={form.dailyCapacity} onChange={e => setForm({ ...form, dailyCapacity: e.target.value })} required />
-          </label>
 
           <label className="input-group">
             <span className="input-label">Number of Counters (N)</span>
@@ -487,6 +540,17 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
   const [loading, setLoading] = useState(false);
   const [exampleKey, setExampleKey] = useState('office-2024');
 
+  // Office Fields
+  const [officeName, setOfficeName] = useState('');
+  const [address, setAddress] = useState('');
+  const [serviceType, setServiceType] = useState('');
+  const [openingTime, setOpeningTime] = useState('09:00');
+  const [closingTime, setClosingTime] = useState('17:00');
+  const [dailyCapacity, setDailyCapacity] = useState('100');
+  const [avgServiceMinutes, setAvgServiceMinutes] = useState('15');
+  const [counterCount, setCounterCount] = useState('1');
+  const [autoNoShow, setAutoNoShow] = useState(false);
+
   useEffect(() => {
     setRole(defaultRole);
   }, [defaultRole]);
@@ -508,7 +572,13 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
     e.preventDefault();
     setLoading(true);
     try {
-      await register(name, email, password, phone, role, role === 'admin' ? adminKey : undefined, dob, gender);
+      const officeDetails = role === 'office_owner' ? {
+        name: officeName, address, serviceType, openingTime, closingTime,
+        dailyCapacity: parseInt(dailyCapacity), avgServiceMinutes: parseInt(avgServiceMinutes),
+        counterCount: parseInt(counterCount), autoNoShow
+      } : null;
+
+      await register(name, email, password, phone, role, role === 'admin' ? adminKey : undefined, dob, gender, officeDetails);
       onSuccess();
     } catch (err) {
       setError(err.message);
@@ -592,6 +662,37 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
             </select>
           </label>
         </div>
+
+        {role === 'office_owner' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '10px', padding: '16px', border: '1px solid var(--gray-200)', borderRadius: '12px', background: 'var(--gray-50)' }}>
+            <h3 style={{ fontSize: '1.1rem', margin: 0 }}>Office Details</h3>
+
+            <div className="field">
+              <input value={officeName} onChange={e => setOfficeName(e.target.value)} required placeholder="Office/Business Name" />
+            </div>
+            <div className="field">
+              <textarea value={address} onChange={e => setAddress(e.target.value)} required placeholder="Full Address" style={{ minHeight: '60px', fontFamily: 'inherit' }} className="input-field" />
+            </div>
+            <div className="grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <input value={serviceType} onChange={e => setServiceType(e.target.value)} required placeholder="Service Type (e.g. Clinic)" />
+              <input type="number" value={counterCount} onChange={e => setCounterCount(e.target.value)} required placeholder="# Counters" />
+            </div>
+            <div className="grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+              <label className="field">
+                <span style={{ fontSize: '0.8rem' }}>Opens At</span>
+                <input type="time" value={openingTime} onChange={e => setOpeningTime(e.target.value)} required />
+              </label>
+              <label className="field">
+                <span style={{ fontSize: '0.8rem' }}>Closes At</span>
+                <input type="time" value={closingTime} onChange={e => setClosingTime(e.target.value)} required />
+              </label>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.9rem' }}>
+              <input type="checkbox" checked={autoNoShow} onChange={e => setAutoNoShow(e.target.checked)} style={{ width: 'auto' }} />
+              <span>Enable Auto No-Show (5m grace)</span>
+            </div>
+          </div>
+        )}
 
         {role === 'admin' && (
           <div className="field">
@@ -1599,18 +1700,55 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
   // New Availability State
   const [availability, setAvailability] = useState(1);
 
+  // New Settings State
+  const [timingsForm, setTimingsForm] = useState({
+    address: '',
+    opening_time: '09:00',
+    closing_time: '17:00',
+    lunch_start: '',
+    lunch_end: '',
+    lunch_flex_minutes: 30,
+    auto_noshow_enabled: false,
+    auto_noshow_grace_minutes: 5
+  });
+  const [timingsLoading, setTimingsLoading] = useState(false);
+
   // Fetch Office Config on Mount
   useEffect(() => {
     if (selectedOfficeId) {
       fetchJSON(`/api/offices/${selectedOfficeId}`)
         .then(data => {
           if (data && data.office) {
-            setAvailability(data.office.counter_count || 1);
+            const o = data.office;
+            setAvailability(o.counter_count || 1);
+            setTimingsForm({
+              address: o.address || '',
+              opening_time: o.opening_time || '09:00',
+              closing_time: o.closing_time || '17:00',
+              lunch_start: o.lunch_start || '',
+              lunch_end: o.lunch_end || '',
+              lunch_flex_minutes: o.lunch_flex_minutes || 30,
+              auto_noshow_enabled: !!o.auto_noshow_enabled,
+              auto_noshow_grace_minutes: o.auto_noshow_grace_minutes || 5
+            });
           }
         })
         .catch(err => console.error("Failed to load office config", err));
     }
   }, [selectedOfficeId]);
+
+  const handleSaveTimings = async () => {
+    if (!adminKey && user.role !== 'office_owner') return setMessage('Access Denied');
+    setTimingsLoading(true);
+    try {
+      await fetchJSON(`/api/offices/${selectedOfficeId}/timings`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }, // Ensure auth
+        body: JSON.stringify(timingsForm)
+      });
+      setMessage('Office timings updated.');
+    } catch (err) { setMessage(err.message); } finally { setTimingsLoading(false); }
+  };
 
   const handleSaveAvailability = async () => {
     if (!adminKey) return setMessage('Admin Access Required');
@@ -1696,6 +1834,102 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
               <div style={{ display: 'flex', alignItems: 'flex-start', paddingTop: '28px' }}>
                 <button className="btn btn-primary" onClick={handleSaveAvailability} disabled={loading} style={{ width: '100%' }}>
                   Update Capacity
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* Location & Timings Card */}
+        {['admin', 'office_owner'].includes(user.role) && (
+          <section className="card hover-lift">
+            <div className="panel-header">
+              <div>
+                <h3 style={{ fontSize: '1.2rem' }}>Location & Timings</h3>
+                <p className="text-muted" style={{ fontSize: '0.9rem', marginTop: '4px' }}>Manage address, operating hours, and automation.</p>
+              </div>
+            </div>
+
+            <div style={{ padding: '0 0 24px 0' }}>
+              {/* Location */}
+              <div style={{ marginBottom: '24px' }}>
+                <label className="input-label">Office Address</label>
+                <textarea
+                  value={timingsForm.address}
+                  onChange={e => setTimingsForm({ ...timingsForm, address: e.target.value })}
+                  className="input-field"
+                  placeholder="Building, Street, City..."
+                  style={{ minHeight: '80px', fontFamily: 'inherit' }}
+                />
+              </div>
+
+              {/* Timings */}
+              <div style={{ marginBottom: '24px' }}>
+                <label className="input-label" style={{ marginBottom: '12px', display: 'block' }}>Operating Hours</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  <div>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)', display: 'block', marginBottom: '4px' }}>Opens</span>
+                    <input type="time" className="input-field" value={timingsForm.opening_time} onChange={e => setTimingsForm({ ...timingsForm, opening_time: e.target.value })} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)', display: 'block', marginBottom: '4px' }}>Closes</span>
+                    <input type="time" className="input-field" value={timingsForm.closing_time} onChange={e => setTimingsForm({ ...timingsForm, closing_time: e.target.value })} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Lunch */}
+              <div style={{ marginBottom: '24px' }}>
+                <label className="input-label" style={{ marginBottom: '12px', display: 'block' }}>Lunch Break (Optional)</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+                  <div>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)', display: 'block', marginBottom: '4px' }}>Start</span>
+                    <input type="time" className="input-field" value={timingsForm.lunch_start} onChange={e => setTimingsForm({ ...timingsForm, lunch_start: e.target.value })} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--gray-500)', display: 'block', marginBottom: '4px' }}>End</span>
+                    <input type="time" className="input-field" value={timingsForm.lunch_end} onChange={e => setTimingsForm({ ...timingsForm, lunch_end: e.target.value })} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Automation */}
+              <div style={{ padding: '16px', background: 'var(--gray-50)', borderRadius: '8px', marginBottom: '24px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                  <label style={{ fontWeight: 600, color: 'var(--gray-800)' }}>Auto No-Show</label>
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={timingsForm.auto_noshow_enabled}
+                      onChange={e => setTimingsForm({ ...timingsForm, auto_noshow_enabled: e.target.checked })}
+                    />
+                    <span className="slider round"></span>
+                  </label>
+                </div>
+                <p className="text-muted" style={{ fontSize: '0.85rem', marginBottom: '16px' }}>
+                  Automatically mark customers as No-Show if they don't arrive within the grace period.
+                </p>
+                <div>
+                  <label className="input-label">Grace Period (Minutes)</label>
+                  <input
+                    type="number"
+                    className="input-field"
+                    value={timingsForm.auto_noshow_grace_minutes}
+                    onChange={e => setTimingsForm({ ...timingsForm, auto_noshow_grace_minutes: parseInt(e.target.value) })}
+                    min="1" max="30"
+                    disabled={!timingsForm.auto_noshow_enabled}
+                  />
+                </div>
+              </div>
+
+              <div style={{ textAlign: 'right' }}>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSaveTimings}
+                  disabled={timingsLoading}
+                  style={{ width: '100%' }}
+                >
+                  {timingsLoading ? 'Saving...' : 'Save Settings'}
                 </button>
               </div>
             </div>
@@ -1894,16 +2128,48 @@ function PauseModal({ isOpen, onClose, onPause }) {
 
 // --- 5. Status Banner ---
 function StatusBanner({ office }) {
-  if (!office || !office.state || office.state === 'LIVE') return null;
-  return (
-    <div style={{
-      background: '#fffebf', color: '#92400e', padding: '12px',
-      textAlign: 'center', fontWeight: 600, borderBottom: '1px solid #fcd34d',
-      position: 'sticky', top: 0, zIndex: 90, gridColumn: '1 / -1'
-    }}>
-      ⏸ Office is currently PAUSED: {office.state}
-    </div>
-  );
+  if (!office) return null;
+
+  // 1. Manual Pause (Highest Priority)
+  if (office.state && office.state !== 'LIVE') {
+    return (
+      <div style={{
+        background: '#fffebf', color: '#92400e', padding: '12px',
+        textAlign: 'center', fontWeight: 600, borderBottom: '1px solid #fcd34d',
+        position: 'sticky', top: 0, zIndex: 90, gridColumn: '1 / -1'
+      }}>
+        ⏸ Office is currently PAUSED: {office.state}
+      </div>
+    );
+  }
+
+  // 2. Closed
+  if (office.current_status === 'CLOSED') {
+    return (
+      <div style={{
+        background: '#fef2f2', color: '#b91c1c', padding: '12px',
+        textAlign: 'center', fontWeight: 600, borderBottom: '1px solid #fecaca',
+        position: 'sticky', top: 0, zIndex: 90, gridColumn: '1 / -1'
+      }}>
+        🔴 Office is CLOSED. Opens at {office.opening_time || '09:00'}
+      </div>
+    );
+  }
+
+  // 3. Lunch Break
+  if (office.current_status === 'LUNCH_BREAK') {
+    return (
+      <div style={{
+        background: '#fff7ed', color: '#c2410c', padding: '12px',
+        textAlign: 'center', fontWeight: 600, borderBottom: '1px solid #fed7aa',
+        position: 'sticky', top: 0, zIndex: 90, gridColumn: '1 / -1'
+      }}>
+        🍊 Office is on LUNCH BREAK. Resumes at {office.lunch_end || '14:00'}
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // --- NEW: Super Admin Dashboard ---
@@ -2654,9 +2920,16 @@ function App() {
     } else {
       // If logged out, force landing view (unless already on login/register)
       if (view !== 'login' && view !== 'register') setView('landing');
+      // Clear sensitive state
+      setOffices([]);
+      setSelectedOfficeId(null);
+      setSelectedOfficeData(null);
     }
     // Reload offices whenever user state changes to ensure correct role-based fetching (Isolation Fix)
-    loadOffices();
+    // Only load if user is logged in OR if we are in public mode (which handles its own loading usually, but okay to confirm)
+    if (user || view === 'landing') {
+      loadOffices();
+    }
   }, [user]);
 
   // useEffect(() => { loadOffices(); }, []); // Removed: Handled by user effect to ensure auth context
@@ -2719,15 +2992,20 @@ function App() {
       const data = await fetchJSON(endpoint);
       setOffices(data.offices);
 
-      // Auto-select for Admin/Owner
-      if (['admin', 'office_owner'].includes(user?.role)) {
+      // Auto-select Logic
+      if (user?.office_id) {
+        // If user is assigned to an office (Staff/linked), select it
+        const assigned = data.offices.find(o => o.id === user.office_id);
+        if (assigned) setSelectedOfficeId(assigned.id);
+        else if (data.offices.length > 0) setSelectedOfficeId(data.offices[0].id); // Fallback
+      } else if (['admin', 'office_owner'].includes(user?.role)) {
         if (data.offices.length > 0) {
           setSelectedOfficeId(data.offices[0].id);
         } else if (user.is_verified) {
           setView('create-office');
         }
-      } else if (!selectedOfficeId && data.offices.length > 0 && !['admin', 'office_owner'].includes(user?.role)) {
-        // Default for customer
+      } else if (!selectedOfficeId && data.offices.length > 0) {
+        // Default for customer (just pick first one if nothing selected)
         setSelectedOfficeId(data.offices[0].id);
       }
     } catch (err) { setMessage(err.message); } finally { setLoading(false); }
@@ -3067,9 +3345,11 @@ function App() {
         <SettingsView user={user} onBack={() => setView('super_admin')} adminKey={adminKey} selectedOfficeId={selectedOfficeId} />
       ) : view === 'super_admin' ? (
         <SuperAdminDashboard user={user} office={selectedOffice} onLogout={logout} onNavigate={setView} />
-      ) : view === 'staff' ? (
+      ) : view === 'super_admin' && user?.role === 'office_owner' ? (
+        <OwnerDashboard user={user} offices={offices} onUpdate={loadOffices} onLogout={logout} />
+      ) : view === 'staff' && (user?.role === 'staff' || user?.role === 'office_owner') ? (
         <StaffDashboard user={user} office={selectedOffice} tokens={selectedOfficeData?.tokens || []} onCall={callCounter} onUpdateToken={updateToken} onLogout={logout} />
-      ) : (
+      ) : (view === 'customer' || (!view && user?.role === 'customer')) ? (
         /* --- CUSTOMER DASHBOARD (Fallback) --- */
         <div className="dashboard-layout" style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 300px) 1fr', gap: '24px', alignItems: 'start' }}>
           <StatusBanner office={selectedOffice} />
@@ -3131,13 +3411,25 @@ function App() {
                     <div>
                       <h4 style={{ fontSize: '1.5rem', marginBottom: '8px' }}>Book a Slot</h4>
                       <p style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>
-                        {selectedOffice.available_today > 0
-                          ? "We're open! Book now to skip the line."
-                          : `Current estimated wait is ${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))} mins. We'll notify you.`
-                        }
+                        {selectedOffice.current_status === 'CLOSED' ? (
+                          <span style={{ color: 'var(--red-500)' }}>We are currently closed. Opens at {selectedOffice.opening_time}.</span>
+                        ) : selectedOffice.current_status === 'LUNCH_BREAK' ? (
+                          <span style={{ color: 'var(--orange-500)' }}>Lunch Break. Resumes at {selectedOffice.lunch_end}.</span>
+                        ) : selectedOffice.available_today > 0 ? (
+                          "We're open! Book now to skip the line."
+                        ) : (
+                          `Current estimated wait is ${Math.round(selectedOffice.queueCount * (selectedOffice.average_velocity || selectedOffice.avg_service_minutes))} mins. We'll notify you.`
+                        )}
                       </p>
                     </div>
-                    <button className="btn btn-primary" onClick={() => setIsBookingModalOpen(true)}>Book Now</button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => setIsBookingModalOpen(true)}
+                      disabled={selectedOffice.current_status === 'CLOSED'}
+                      style={{ opacity: selectedOffice.current_status === 'CLOSED' ? 0.5 : 1 }}
+                    >
+                      {selectedOffice.current_status === 'CLOSED' ? 'Closed' : 'Book Now'}
+                    </button>
                   </div>
                 </section>
 
@@ -3217,8 +3509,13 @@ function App() {
             )}
           </main>
         </div>
-      )
-      }
+      ) : (
+        <div className="flex-center" style={{ height: '60vh', flexDirection: 'column', gap: '20px' }}>
+          <h2>Access Denied</h2>
+          <p className="text-muted">You do not have permission to view this page or the link is invalid.</p>
+          <button className="btn btn-primary" onClick={() => setView('landing')}>Go to Home</button>
+        </div>
+      )}
 
       {/* Pause Modal */}
       <PauseModal

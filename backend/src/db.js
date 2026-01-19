@@ -180,33 +180,58 @@ try { db.exec(`ALTER TABLE tokens ADD COLUMN arrival_confirmed_at TEXT`); } catc
 try { db.exec(`ALTER TABLE offices ADD COLUMN state TEXT DEFAULT 'LIVE'`); } catch (e) { }
 try { db.exec(`ALTER TABLE offices ADD COLUMN pause_started_at TEXT`); } catch (e) { }
 
+// Office Location & Timings Schema
+try { db.exec(`ALTER TABLE offices ADD COLUMN address TEXT`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN latitude REAL`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN longitude REAL`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN opening_time TEXT DEFAULT '09:00'`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN closing_time TEXT DEFAULT '17:00'`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN lunch_start TEXT DEFAULT '13:00'`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN lunch_end TEXT DEFAULT '13:30'`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN lunch_flex_minutes INTEGER DEFAULT 30`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN auto_noshow_enabled INTEGER DEFAULT 0`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN auto_noshow_grace_minutes INTEGER DEFAULT 5`); } catch (e) { }
+try { db.exec(`ALTER TABLE offices ADD COLUMN current_status TEXT DEFAULT 'OPEN'`); } catch (e) { }
+
 // Counter Support Schema
 try { db.exec(`ALTER TABLE tokens ADD COLUMN assigned_counter INTEGER`); } catch (e) { }
 try { db.exec(`ALTER TABLE tokens ADD COLUMN called_by_counter INTEGER`); } catch (e) { }
 try { db.exec(`ALTER TABLE token_history ADD COLUMN counter_number INTEGER`); } catch (e) { }
 
-// NEW: Active Staff for Session Management (Session Tracking Only)
+// NEW: Staff Table (Strict Separation)
 db.exec(`
-DROP TABLE IF EXISTS active_staff;
-CREATE TABLE IF NOT EXISTS active_staff (
-  user_id TEXT PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS staff (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
   office_id TEXT NOT NULL,
-  role TEXT NOT NULL, 
   counter_number INTEGER,
-  login_time TEXT NOT NULL,
-  last_seen TEXT,
-  socket_id TEXT,
+  created_at TEXT NOT NULL,
   FOREIGN KEY (user_id) REFERENCES users(id),
   FOREIGN KEY (office_id) REFERENCES offices(id)
 );
 `);
 
-// MIGRATIONS for Static Staff Assignment
-try { db.exec(`ALTER TABLE users ADD COLUMN office_id TEXT REFERENCES offices(id)`); } catch (e) { }
-try { db.exec(`ALTER TABLE users ADD COLUMN assigned_counter INTEGER DEFAULT NULL`); } catch (e) { }
-try { db.exec(`ALTER TABLE offices ADD COLUMN active_counters INTEGER DEFAULT 1`); } catch (e) { }
+// MIGRATION: Backfill Staff Table
+try {
+  const existingStaff = db.prepare("SELECT * FROM users WHERE role = 'staff' AND office_id IS NOT NULL").all();
+  const insertStaff = db.prepare("INSERT OR IGNORE INTO staff (id, user_id, office_id, counter_number, created_at) VALUES (@id, @user_id, @office_id, @counter_number, @created_at)");
+  const { v4: uuidv4 } = require('uuid');
 
-// Drop obsolete dynamic counters table
-db.exec(`DROP TABLE IF EXISTS counters;`);
+  existingStaff.forEach(u => {
+    insertStaff.run({
+      id: uuidv4(),
+      user_id: u.id,
+      office_id: u.office_id,
+      counter_number: u.assigned_counter || 1,
+      created_at: new Date().toISOString()
+    });
+  });
+} catch (e) { console.error('Staff Backfill Error:', e); }
+
+// MIGRATION: Notifications Office Scope
+try { db.exec(`ALTER TABLE notifications ADD COLUMN office_id TEXT REFERENCES offices(id)`); } catch (e) { }
+
+// Drop obsolete tables or fields if strict cleanup desired (Optional, keeping safe for now)
+// db.exec(`DROP TABLE IF EXISTS active_staff;`); // We might repurpose active_staff or just use staff table
 
 module.exports = db;

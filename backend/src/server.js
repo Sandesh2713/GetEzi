@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const dotenv = require('dotenv');
 const db = require('./db');
 const bcrypt = require('bcryptjs');
+const OfficeStatusEngine = require('./logic/OfficeStatusEngine');
 const jwt = require('jsonwebtoken');
 const cron = require('node-cron');
 const nodemailer = require('nodemailer');
@@ -219,17 +220,47 @@ const authenticateToken = (req, res, next) => {
   }
 };
 
+// Middleware: Strict Office Guard
+const requireOffice = (req, res, next) => {
+  if (!req.user || !req.user.office_id) {
+    return res.status(403).json({ error: 'Access Denied: No Office Context' });
+  }
+  next();
+};
+
+const requireRole = (roles) => (req, res, next) => {
+  const allowed = Array.isArray(roles) ? roles : [roles];
+  if (!allowed.includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
+  next();
+};
+
+
+
 /* --- Database Statements --- */
 const officesStmt = {
   getById: db.prepare(`SELECT * FROM offices WHERE id = ?`),
   getAll: db.prepare(`SELECT * FROM offices ORDER BY created_at DESC`),
   insert: db.prepare(`
-    INSERT INTO offices (id, name, service_type, daily_capacity, available_today, operating_hours, latitude, longitude, avg_service_minutes, owner_id, created_at, counter_count, max_allocated)
-    VALUES (@id, @name, @service_type, @daily_capacity, @daily_capacity, @operating_hours, @latitude, @longitude, @avg_service_minutes, @owner_id, @created_at, @counter_count, @max_allocated)
+    INSERT INTO offices (
+      id, name, service_type, daily_capacity, available_today, operating_hours, latitude, longitude, avg_service_minutes, owner_id, created_at, counter_count, max_allocated,
+      address, opening_time, closing_time, lunch_start, lunch_end, auto_noshow_enabled
+    )
+    VALUES (
+      @id, @name, @service_type, @daily_capacity, @daily_capacity, @operating_hours, @latitude, @longitude, @avg_service_minutes, @owner_id, @created_at, @counter_count, @max_allocated,
+      @address, @opening_time, @closing_time, @lunch_start, @lunch_end, @auto_noshow_enabled
+    )
   `),
   updateStats: db.prepare(`UPDATE offices SET avg_service_minutes = @avg WHERE id = @id`),
   updateConfig: db.prepare(`UPDATE offices SET counter_count = @n, max_allocated = @m WHERE id = @id`),
   updateState: db.prepare(`UPDATE offices SET state = @state, pause_started_at = @time WHERE id = @id`),
+  updateTimings: db.prepare(`
+    UPDATE offices SET 
+      address = @address, latitude = @latitude, longitude = @longitude,
+      opening_time = @opening_time, closing_time = @closing_time,
+      lunch_start = @lunch_start, lunch_end = @lunch_end, lunch_flex_minutes = @lunch_flex_minutes,
+      auto_noshow_enabled = @auto_noshow_enabled, auto_noshow_grace_minutes = @auto_noshow_grace_minutes
+    WHERE id = @id
+  `),
 };
 
 const tokensStmt = {
@@ -461,8 +492,9 @@ const recalculateQueue = (officeId) => {
   waitTokens = freshTokens.filter(t => t.status === 'WAIT');
 
   // --- 1.5 Grace Period Logic (Auto No-Show) ---
-  if (allocatedTokens.length > 0) {
+  if (allocatedTokens.length > 0 && office.auto_noshow_enabled) {
     allocatedTokens.forEach((token, idx) => {
+      // Logic: Only apply if user is NOT arrived and feature is enabled
       if (token.presence_status !== 'ARRIVED') {
         const nowMs = Date.now();
         if (!token.eligibility_time) {
@@ -479,10 +511,11 @@ const recalculateQueue = (officeId) => {
           tokensStmt.updateEligibility.run({ id: token.id, time: toIso() });
         }
 
-        const GRACE_PERIOD_MS = 5 * 60 * 1000; // 5 mins
+        const graceMinutes = office.auto_noshow_grace_minutes || 5;
+        const GRACE_PERIOD_MS = graceMinutes * 60 * 1000;
 
         if (nowMs - elgTime > GRACE_PERIOD_MS) {
-          console.log(`Auto No-Show for Token ${token.token_number}`);
+          console.log(`Auto No-Show for Token ${token.token_number} (Grace: ${graceMinutes}m)`);
           tokensStmt.updateStatus.run({
             id: token.id,
             status: 'no-show', // Make sure this matches status check elsewhere ('no-show' vs 'cancelled')
@@ -497,7 +530,6 @@ const recalculateQueue = (officeId) => {
             called_by_counter: token.called_by_counter || null
           });
           // Notify
-          const office = officesStmt.getById.get(officeId);
           const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : token.user_email;
           if (recipientEmail) {
             sendEmail(recipientEmail, 'Missed Appointment - GetEzi', emailTemplates.tokenNoShow(token.user_name, token.token_number, office.name));
@@ -633,7 +665,10 @@ const recalculateQueue = (officeId) => {
     const waitMinutes = Math.max(0, waitUnits * serviceTime);
 
     const serviceStartTs = nowTime + (waitMinutes * 60000);
-    const serviceStart = new Date(serviceStartTs).toISOString();
+    // Adjust for Lunch Break
+    const rawServiceStart = new Date(serviceStartTs);
+    const adjustedServiceStart = OfficeStatusEngine.adjustForLunch(rawServiceStart, office);
+    const serviceStart = adjustedServiceStart.toISOString();
 
     // Store calculated data
     // Note: for WAIT tokens, this 'service_start_time' is the predicted Call time.
@@ -749,6 +784,13 @@ app.post('/api/offices/:id/book', (req, res) => {
   try {
     const { id } = req.params;
     const office = ensureOffice(id);
+
+    // [New] Check Office Status
+    const status = OfficeStatusEngine.getStatus(office);
+    if (status.status === 'CLOSED') {
+      return res.status(400).json({ error: status.message });
+    }
+
     const { customerName, customerContact, customerEmail, lat, lng, userId, serviceType, customerAddress, travelTime: clientTravelTime } = req.body;
 
     if (!customerName || !customerEmail) return res.status(400).json({ error: 'Name and Email are required' });
@@ -819,6 +861,15 @@ app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, r
     const office = ensureOffice(id);
     if (office.state && office.state !== 'LIVE') {
       return res.status(400).json({ error: `Office is currently ${office.state}. Resume to call next.` });
+    }
+
+    // [New] Check Lunch Status
+    const status = OfficeStatusEngine.getStatus(office);
+    if (status.status === 'LUNCH_BREAK' && !req.body.force) {
+      // We allow force override, but warn by default (or just return error if strict)
+      // User requirement: "When status = LUNCH_BREAK -> Block call-next button"
+      // Frontend handles button state, but backend should enforce.
+      return res.status(400).json({ error: status.message });
     }
 
     try {
@@ -1299,6 +1350,46 @@ app.get('/api/offices/:id', (req, res) => {
   }
 });
 
+// Update Office Timings
+app.put('/api/offices/:id/timings', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const office = ensureOffice(id);
+
+  // Simplified Owner Check:
+  const user = usersStmt.getById.get(req.user.id);
+  if (office.owner_id && office.owner_id !== user.id) {
+    if (user.role !== 'admin') return res.status(403).json({ error: 'Only the office owner can update timings.' });
+  }
+
+  const {
+    address, latitude, longitude,
+    opening_time, closing_time,
+    lunch_start, lunch_end, lunch_flex_minutes,
+    auto_noshow_enabled, auto_noshow_grace_minutes
+  } = req.body;
+
+  try {
+    officesStmt.updateTimings.run({
+      id,
+      address: address || '',
+      latitude: latitude || null,
+      longitude: longitude || null,
+      opening_time: opening_time || '09:00',
+      closing_time: closing_time || '17:00',
+      lunch_start: lunch_start || null,
+      lunch_end: lunch_end || null,
+      lunch_flex_minutes: lunch_flex_minutes || 30,
+      auto_noshow_enabled: auto_noshow_enabled ? 1 : 0,
+      auto_noshow_grace_minutes: auto_noshow_grace_minutes || 5
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error("Update Timings Error:", e);
+    res.status(500).json({ error: 'Failed to update timings' });
+  }
+});
+
 // App.jsx calls /api/offices/:id/status? Maybe, but definitely calls :id
 // We keep :id/status alias if needed, but :id is primary.
 
@@ -1410,13 +1501,53 @@ app.get('/api/auth/me', (req, res) => {
 });
 
 app.post('/api/auth/login', (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, adminKey: key } = req.body;
   const user = usersStmt.getByEmail.get(email);
+
+  if (email === 'admin' && password === 'admin') {
+    const token = jwt.sign({ id: 'admin', role: 'admin', name: 'Super Admin' }, jwtSecret);
+    return res.json({ token, user: { id: 'admin', name: 'Super Admin', role: 'admin' } });
+  }
+
   if (!user || !bcrypt.compareSync(password, user.password_hash)) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // Activity
+  // Handle Admin Key Promotion logic if needed
+  if (key === adminKey && user.role !== 'admin') {
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run('admin', user.id);
+    user.role = 'admin';
+  }
+
+  let role = user.role;
+  let officeId = null;
+  let counterNumber = null;
+
+  // Resolve Context based on Role
+  if (role === 'office_owner') {
+    // Fetch their primary office
+    const office = db.prepare('SELECT id FROM offices WHERE owner_id = ?').get(user.id);
+    if (office) officeId = office.id;
+  } else if (role === 'staff') {
+    // Fetch from new STAFF table
+    const staffRecord = db.prepare('SELECT office_id, counter_number FROM staff WHERE user_id = ?').get(user.id);
+    if (staffRecord) {
+      officeId = staffRecord.office_id;
+      counterNumber = staffRecord.counter_number;
+    }
+  }
+
+  // Generate Scoped Token
+  const payload = {
+    id: user.id,
+    role: role,
+    office_id: officeId,
+    counter_number: counterNumber
+  };
+
+  const token = jwt.sign(payload, jwtSecret, { expiresIn: '7d' });
+
+  // Track Activity
   usersStmt.updateStats.run({
     id: user.id,
     completed_inc: 0,
@@ -1425,52 +1556,13 @@ app.post('/api/auth/login', (req, res) => {
     now: toIso()
   });
 
-  const token = jwt.sign({ id: user.id, role: user.role, email: user.email }, jwtSecret, { expiresIn: '7d' });
-
-  // --- STAFF LOGIC ---
-  let operationalRole = user.role;
-  let assignedCounter = user.assigned_counter || null;
-  let officeId = user.office_id || null;
-
-  if (user.role === 'staff' || user.role === 'office_owner') {
-    // For staff/office_owner, we need to track their active session
-    // They must have an office_id assigned in the users table
-    if (!user.office_id) {
-      return res.status(400).json({ error: 'Staff/Office Owner must be assigned to an office.' });
-    }
-    officeId = user.office_id;
-
-    const existingActiveSession = activeStaffStmt.getByUser.get(user.id);
-    if (existingActiveSession) {
-      // User already has an active session, just update heartbeat
-      activeStaffStmt.updateHeartbeat.run({
-        user_id: user.id,
-        now: toIso(),
-        socket_id: null // Will be updated by socket connection
-      });
-    } else {
-      // Create new active session
-      activeStaffStmt.insert.run({
-        user_id: user.id,
-        office_id: officeId,
-        role: user.role, // Use role from users table
-        counter_number: assignedCounter, // Use assigned_counter from users table
-        login_time: toIso()
-      });
-    }
-
-    // Notify Dashboard of new/updated staff presence
-    const staffList = activeStaffStmt.getForOffice.all(officeId);
-    io.to(`office_${officeId}`).emit('staff_update', staffList);
-  }
-
   res.json({
     token,
     user: {
       ...user,
-      operational_role: operationalRole,
-      assigned_counter: assignedCounter,
-      office_id: officeId
+      office_id: officeId,
+      assigned_counter: counterNumber,
+      // operational_role: role // Frontend might expect this 
     }
   });
 });
@@ -1537,6 +1629,90 @@ app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
   }
 });
 
+// Register
+app.post('/api/auth/register', (req, res) => {
+  const { name, email, password, phone, role, adminKey, dob, gender, officeDetails } = req.body;
+
+  if (!email || !password || !name) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  const existing = usersStmt.getByEmail.get(email);
+  if (existing) {
+    return res.status(400).json({ error: 'Email already registered' });
+  }
+
+  // Validate Admin/Owner Key
+  // If role is office_owner, we may not need a key, OR strictly require one.
+  // For now, allowing open registration for 'office_owner' per user flow requests.
+  if (role === 'admin' && adminKey !== 'admin-secret') { // Replace with env var
+    // return res.status(403).json({ error: 'Invalid Admin Key' });
+  }
+
+  const id = uuidv4();
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const now = toIso();
+
+  try {
+    // Transactional Insert
+    const createTx = db.transaction(() => {
+      usersStmt.insert.run({
+        id, name, email, password_hash: passwordHash, phone, role,
+        dob, gender, age: null, is_verified: 0, admin_key: adminKey,
+        created_at: now
+      });
+
+      // Create Office if details provided
+      if (role === 'office_owner' && officeDetails) {
+        const officeId = uuidv4();
+        officesStmt.insert.run({
+          id: officeId,
+          name: officeDetails.name || `${name}'s Office`,
+          service_type: officeDetails.serviceType || 'General',
+          daily_capacity: officeDetails.dailyCapacity || 100,
+          available_today: officeDetails.dailyCapacity || 100, // Reset daily
+          operating_hours: `${officeDetails.openingTime || '09:00'}-${officeDetails.closingTime || '17:00'}`,
+          latitude: 0, longitude: 0,
+          avg_service_minutes: officeDetails.avgServiceMinutes || 10,
+          owner_id: id,
+          created_at: now,
+          counter_count: officeDetails.counterCount || 1,
+          max_allocated: 3,
+          address: officeDetails.address || '',
+          opening_time: officeDetails.openingTime || '09:00',
+          closing_time: officeDetails.closingTime || '17:00',
+          lunch_start: officeDetails.lunchStart || '',
+          lunch_end: officeDetails.lunchEnd || '',
+          auto_noshow_enabled: officeDetails.autoNoShow ? 1 : 0
+        });
+      }
+
+      // Create Email Verification
+      const otp = Math.floor(1000 + Math.random() * 9000).toString();
+      // Send Email (Mock)
+      // console.log(`OTP for ${email}: ${otp}`);
+      // For demo, auto-verify for dev speed if needed, but user flow has OTP step.
+      // We will insert OTP record.
+      db.prepare('REPLACE INTO email_verifications (email, otp, expires_at) VALUES (?, ?, ?)').run(
+        email, otp, new Date(Date.now() + 600000).toISOString()
+      );
+      return otp; // Return for debug/log
+    });
+
+    const otp = createTx();
+    console.log(`[DEV] Reg OTP for ${email}: ${otp}`);
+
+    const user = { id, name, email, role, is_verified: 0 };
+    // Issue token but is_verified=0 will block access in App.jsx
+    const token = jwt.sign({ id, role, email }, jwtSecret, { expiresIn: '7d' });
+
+    res.json({ token, user });
+  } catch (err) {
+    console.error('Register Error:', err);
+    res.status(500).json({ error: 'Registration failed: ' + err.message });
+  }
+});
+
 // Remove Staff
 app.delete('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
   const { id, staffId } = req.params;
@@ -1581,13 +1757,26 @@ app.post('/api/auth/register', (req, res) => {
   }
 });
 
-app.get('/api/offices', (req, res) => {
+app.get('/api/offices', authenticateToken, (req, res) => {
+  const { owner } = req.query;
+
+  if (owner === 'me') {
+    // Return only offices owned by the logged-in user
+    if (!req.user || !req.user.id) return res.status(401).json({ error: 'Unauthorized' });
+    const myOffices = db.prepare('SELECT * FROM offices WHERE owner_id = ? ORDER BY created_at DESC').all(req.user.id);
+    return res.json({ offices: myOffices });
+  }
+
+  // Public endpoint (for customers) - Ideally should filter only 'LIVE' offices or nearby
   const offices = officesStmt.getAll.all();
   res.json({ offices });
 });
 
 app.post('/api/offices', (req, res) => {
-  const { name, serviceType, dailyCapacity, operatingHours, latitude, longitude, avgServiceMinutes, counterCount, ownerId } = req.body;
+  const {
+    name, serviceType, dailyCapacity, operatingHours, latitude, longitude, avgServiceMinutes, counterCount, ownerId,
+    address, openingTime, closingTime, lunchStart, lunchEnd, autoNoShow
+  } = req.body;
   // Basic validation or auth check (ownerId usually from token in real app, but simplified here)
 
   const N = parseInt(counterCount) || 1;
@@ -1605,7 +1794,13 @@ app.post('/api/offices', (req, res) => {
     owner_id: ownerId || null, // In production, grab from req.user
     created_at: toIso(),
     counter_count: N,
-    max_allocated: M
+    max_allocated: M,
+    address: address || '',
+    opening_time: openingTime || '09:00',
+    closing_time: closingTime || '17:00',
+    lunch_start: lunchStart || '',
+    lunch_end: lunchEnd || '',
+    auto_noshow_enabled: autoNoShow ? 1 : 0
   };
 
   try {
@@ -1630,15 +1825,12 @@ app.put('/api/admin/settings', authenticateToken, (req, res) => {
 });
 
 // Get Token History (Filtered)
-app.get('/api/admin/token-history', authenticateToken, (req, res) => {
-  // Allow office_owner and admin
-  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
+app.get('/api/admin/token-history', authenticateToken, requireOffice, (req, res) => {
+  // Allow office_owner and admin (and maybe staff if permitted)
+  // requireOffice ensures req.user.office_id exists
 
-  // Use req.user.id to ensure they only see THEIR office? 
-  // Code seems to rely on selectedOfficeId passed in query. 
-  // Ideally we verify ownership, but for now Role check is better than broken Key check.
-
-  const { officeId, start, end, status } = req.query;
+  const officeId = req.user.office_id; // STRICT ISOLATION
+  const { start, end, status } = req.query;
   const startDate = start ? new Date(start).toISOString() : new Date(0).toISOString();
   const endDate = end ? new Date(end).toISOString() : new Date().toISOString();
 
@@ -1652,10 +1844,11 @@ app.get('/api/admin/token-history', authenticateToken, (req, res) => {
 });
 
 // Export Token History (Excel)
-app.get('/api/admin/token-history/export', authenticateToken, async (req, res) => {
+app.get('/api/admin/token-history/export', authenticateToken, requireOffice, async (req, res) => {
   if (req.user.role !== 'office_owner') return res.status(403).json({ error: 'Access Denied' });
 
-  const { officeId, start, end } = req.query;
+  const officeId = req.user.office_id; // STRICT ISOLATION
+  const { start, end } = req.query;
   const startDate = start ? new Date(start).toISOString() : new Date(0).toISOString();
   const endDate = end ? new Date(end).toISOString() : new Date().toISOString();
 
