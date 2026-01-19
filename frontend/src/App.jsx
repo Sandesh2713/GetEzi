@@ -13,6 +13,7 @@ import { About } from './components/landing/About';
 import { Footer } from './components/landing/Footer';
 import { StaffLoginView } from './components/auth/StaffLoginView';
 import { OwnerLoginView } from './components/auth/OwnerLoginView';
+import { OwnerRegistrationWizard } from './components/auth/OwnerRegistrationWizard';
 import { CustomerLoginView } from './components/auth/CustomerLoginView';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
@@ -2679,7 +2680,7 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
 }
 
 function App() {
-  const { user, logout, loading: authLoading } = useAuth();
+  const { user, register, logout, loading: authLoading } = useAuth();
 
   const getDefaultView = (u) => {
     if (!u) return 'landing';
@@ -3301,14 +3302,29 @@ function App() {
       ) : view === 'create-office' ? (
         <CreateOfficeWizard onSubmit={handleCreateOffice} onBack={() => setView('admin')} />
       ) : view === 'register' ? (
-        <RegisterView
-          onSuccess={() => {
-            setView('verify-email');
-          }}
-          onSwitch={() => setView('login')}
-          defaultRole={registerRole}
-          onBack={() => setView('landing')}
-        />
+        // Route to Wizard for Owners, Standard View for others
+        registerRole === 'office_owner' ? (
+          <OwnerRegistrationWizard
+            onSubmit={(data) => {
+              // Wrapper to match wizard output to context register
+              register(
+                data.name, data.email, data.password, data.phone,
+                data.role, undefined, null, null, data.officeDetails
+              ).then(() => setView('verify-email'))
+                .catch(err => setMessage(err.message));
+            }}
+            onBack={() => setView('landing')}
+          />
+        ) : (
+          <RegisterView
+            onSuccess={() => {
+              setView('verify-email');
+            }}
+            onSwitch={() => setView('login')}
+            defaultRole={registerRole}
+            onBack={() => setView('landing')}
+          />
+        )
       ) : view === 'verify-email' && user ? (
         <VerifyEmailView
           email={user.email}

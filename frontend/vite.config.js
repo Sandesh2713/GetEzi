@@ -8,4 +8,8 @@ export default defineConfig({
     tailwindcss(),
     react()
   ],
+  server: {
+    host: '0.0.0.0', // Bind to all network interfaces
+    allowedHosts: true, // Allow all host headers (needed for DevTunnels/ngrok)
+  }
 })

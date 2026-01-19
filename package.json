@@ -1,0 +1,18 @@
+{
+    "name": "queue-management-root",
+    "version": "1.0.0",
+    "private": true,
+    "workspaces": [
+        "frontend",
+        "backend"
+    ],
+    "scripts": {
+        "install:all": "npm install && npm install -w frontend && npm install -w backend",
+        "dev:frontend": "npm run dev -w frontend",
+        "dev:backend": "npm run dev -w backend",
+        "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\""
+    },
+    "devDependencies": {
+        "concurrently": "^9.1.0"
+    }
+}

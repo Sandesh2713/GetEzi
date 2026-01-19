@@ -61,7 +61,7 @@ export function AuthProvider({ children }) {
         const res = await fetch(`${API_BASE}/api/auth/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, email, password, phone, role, adminKey, dob, gender }),
+            body: JSON.stringify({ name, email, password, phone, role, adminKey, dob, gender, officeDetails }),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);

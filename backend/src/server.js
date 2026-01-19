@@ -21,7 +21,7 @@ const app = express();
 const server = http.createServer(app);
 const port = process.env.PORT || 4000;
 const adminKey = process.env.ADMIN_KEY || 'changeme-admin-key';
-const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
+const clientOrigin = process.env.CLIENT_ORIGIN || '*';
 const jwtSecret = process.env.JWT_SECRET || 'super-secret-jwt-key';
 const smtpUser = process.env.SMTP_USER;
 const smtpPass = process.env.SMTP_PASS;
@@ -1657,7 +1657,7 @@ app.post('/api/auth/register', (req, res) => {
     // Transactional Insert
     const createTx = db.transaction(() => {
       usersStmt.insert.run({
-        id, name, email, password_hash: passwordHash, phone, role,
+        id, name, email, hash: passwordHash, phone, role,
         dob, gender, age: null, is_verified: 0, admin_key: adminKey,
         created_at: now
       });
@@ -1744,26 +1744,25 @@ app.get('/api/offices/:id/staff', (req, res) => {
   res.json({ staff: fullStaff });
 });
 
-app.post('/api/auth/register', (req, res) => {
-  const { name, email, password, role } = req.body;
-  const hash = bcrypt.hashSync(password, 10);
-  try {
-    const id = uuidv4();
-    usersStmt.insert.run({ id, name, email, hash, role: role || 'customer', created_at: toIso() });
-    const token = jwt.sign({ id, role: role || 'customer' }, jwtSecret);
-    res.json({ token, user: { id, name, email, role } });
-  } catch (e) {
-    res.status(400).json({ error: 'Email exists or invalid' });
-  }
-});
 
-app.get('/api/offices', authenticateToken, (req, res) => {
+
+app.get('/api/offices', (req, res) => {
   const { owner } = req.query;
 
   if (owner === 'me') {
+    // Manual Auth Check
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return res.status(401).json({ error: 'Unauthorized' });
+    const token = authHeader.split(' ')[1];
+    let user;
+    try {
+      user = jwt.verify(token, jwtSecret);
+    } catch (e) {
+      return res.status(403).json({ error: 'Invalid token' });
+    }
+
     // Return only offices owned by the logged-in user
-    if (!req.user || !req.user.id) return res.status(401).json({ error: 'Unauthorized' });
-    const myOffices = db.prepare('SELECT * FROM offices WHERE owner_id = ? ORDER BY created_at DESC').all(req.user.id);
+    const myOffices = db.prepare('SELECT * FROM offices WHERE owner_id = ? ORDER BY created_at DESC').all(user.id);
     return res.json({ offices: myOffices });
   }
 
