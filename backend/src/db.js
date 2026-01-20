@@ -3,10 +3,9 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 
 // 🔐 RENDER SAFE STORAGE
-const dataDir =
-  process.env.RENDER
-    ? '/data'
-    : path.join(__dirname, '..', 'data');
+const dataDir = path.join(__dirname, '..', 'data');
+
+
 
 const dbPath = path.join(dataDir, 'queue.db');
 
