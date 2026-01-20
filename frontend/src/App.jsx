@@ -16,6 +16,11 @@ import { OwnerLoginView } from './components/auth/OwnerLoginView';
 import { OwnerRegistrationWizard } from './components/auth/OwnerRegistrationWizard';
 import { CustomerLoginView } from './components/auth/CustomerLoginView';
 import CustomerPortal from './components/dashboard/CustomerPortal';
+import OwnerDashboard from './components/dashboard/OwnerDashboard';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee
+} from 'lucide-react';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
   const [form, setForm] = useState({
@@ -2488,194 +2493,366 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
   const isActive = user.assigned_counter <= (office?.active_counters || 1);
   const myCounter = user.assigned_counter;
 
-  // Filter tokens for MY counter
-  // In the new logic, tokens are assigned to a counter. 
-  // We need to show:
-  // 1. Current Token (Status = CALLED, Assigned to Me)
-  // 2. Waiting Tokens (Status = WAIT, Allocation might be pending or dynamic, but we show the general queue or my allocation)
-  //    Legacy system: Admin saw ALL waiting tokens or filtered list. 
-  //    Staff system: You likely pull from the general pool or your specific queue. 
-  //    For now, we show tokens assigned to this counter OR unassigned tokens if 'Next' pulls from global.
-  //    Actually, 'onCall' (server side) assigns a token to me. So I should see tokens in 'WAIT' status that are assigned to me OR generally available?
-  //    Let's stick to: My Current (CALLED) + My Queue (ALLOCATED/WAIT with assigned_counter = myCounter).
+  // Merge real tokens with test tokens for UI testing
+  // Filter out duplicate test tokens if real tokens have same ID
+  const allTokens = tokens || [];
 
-  const myTokens = tokens.filter(t => t.assigned_counter === myCounter);
+  // Filter tokens for MY counter
+  const myTokens = allTokens.filter(t => t.assigned_counter === myCounter);
   const currentToken = myTokens.find(t => t.status === 'CALLED');
-  // For queue list, show ALL waiting tokens for this office if not strictly assigned yet, 
-  // or just assigned ones. To mimic "Admin View", we often showed the whole queue.
-  // But strict assignment says "Allocated to Counter X".
-  // Let's show "My Queue" (Allocated to me) and "General Pool" (Waiting).
   const myQueue = myTokens.filter(t => ['ALLOCATED', 'WAIT'].includes(t.status));
-  const generalQueue = tokens.filter(t => t.status === 'WAIT' && !t.assigned_counter);
+  const generalQueue = allTokens.filter(t => t.status === 'WAIT' && !t.assigned_counter);
+  const completedCount = allTokens.filter(t => t.assigned_counter === myCounter && ['COMPLETED'].includes(t.status)).length;
+  const noShowCount = allTokens.filter(t => t.assigned_counter === myCounter && ['no-show'].includes(t.status)).length;
+  const futureBookings = allTokens.filter(t => t.status === 'booked');
+
+  // Animation variants
+  const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+      opacity: 1,
+      transition: { staggerChildren: 0.05 },
+    },
+  };
+
+  const itemVariants = {
+    hidden: { opacity: 0, y: 10 },
+    visible: { opacity: 1, y: 0, transition: { duration: 0.3 } },
+  };
 
   return (
-    <div className="dashboard-layout" style={{ maxWidth: '1000px', margin: '0 auto', padding: '24px', display: 'grid', gridTemplateColumns: '1fr 350px', gap: '24px', alignItems: 'start' }}>
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-purple-50">
+      {/* Floating Background Elements */}
+      <div className="fixed inset-0 overflow-hidden pointer-events-none">
+        <motion.div
+          className="absolute top-20 left-10 w-96 h-96 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-full mix-blend-multiply filter blur-3xl opacity-20"
+          animate={{ y: [0, 50, 0], x: [0, 30, 0] }}
+          transition={{ duration: 8, repeat: Infinity }}
+        />
+        <motion.div
+          className="absolute bottom-20 right-10 w-96 h-96 bg-gradient-to-br from-purple-200 to-pink-100 rounded-full mix-blend-multiply filter blur-3xl opacity-20"
+          animate={{ y: [0, -50, 0], x: [0, -30, 0] }}
+          transition={{ duration: 10, repeat: Infinity }}
+        />
+      </div>
 
-      {/* LEFT COLUMN: Controls */}
-      <main>
-        <header style={{ marginBottom: '32px' }}>
-          <div className="eyebrow" style={{ color: isActive ? 'var(--primary-600)' : 'var(--error-600)' }}>
-            {isActive ? '● Online & Ready' : '● Counter Disabled'}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+      {/* Header */}
+      <motion.header
+        className="bg-white border-b border-gray-200 sticky top-0 w-full z-50 shadow-sm"
+        initial={{ y: -100 }}
+        animate={{ y: 0 }}
+        transition={{ type: "spring", stiffness: 100 }}
+      >
+        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+          {/* Logo/Title */}
+          <div className="flex items-center gap-3">
+            <div className={`p-2 rounded-lg ${isActive ? 'bg-purple-50' : 'bg-red-50'}`}>
+              <User className={isActive ? 'text-purple-600' : 'text-red-600'} size={24} />
+            </div>
             <div>
-              <h2 style={{ fontSize: '2.5rem', fontWeight: 800, letterSpacing: '-0.03em', lineHeight: 1 }}>Counter {myCounter}</h2>
-              <div className="text-muted" style={{ fontSize: '1.1rem', marginTop: '8px' }}>Staff: {user.name}</div>
+              <h1 className="text-xl font-bold text-gray-900">Counter {myCounter}</h1>
+              <p className="text-xs text-gray-500 font-medium">
+                {user.name} · Staff Portal
+              </p>
             </div>
-            <button className="btn btn-secondary" onClick={onLogout}>Logout</button>
           </div>
-        </header>
 
-        {!isActive && (
-          <div className="card" style={{ background: '#fee2e2', border: '1px solid #fecaca', color: '#b91c1c' }}>
-            <h3 style={{ fontSize: '1.25rem', marginBottom: '8px' }}>⛔ Counter Inactive</h3>
-            <p>This counter is currently disabled by the office manager.<br />Please ask them to increase the <b>Active Counter Limit</b> to {myCounter}.</p>
+          {/* Right Actions */}
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div className={`w-3 h-3 rounded-full animate-pulse ${isActive ? 'bg-purple-500' : 'bg-red-500'}`} />
+              <span className={`text-sm font-medium ${isActive ? 'text-purple-600' : 'text-red-600'}`}>
+                {isActive ? 'Online & Ready' : 'Counter Disabled'}
+              </span>
+            </div>
+            <div className="h-8 w-px bg-gray-200" />
+            <motion.button
+              onClick={onLogout}
+              className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors border-none bg-transparent"
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.95 }}
+              title="Logout"
+            >
+              <LogOut size={20} />
+            </motion.button>
           </div>
-        )}
+        </div>
+      </motion.header>
 
-        {isActive && (
-          <div className="card" style={{ padding: '40px', textAlign: 'center', minHeight: '400px', display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center' }}>
-            {currentToken ? (
-              <div className="animate-fade-in" style={{ width: '100%' }}>
-                <span className="badge badge-primary" style={{ marginBottom: '16px' }}>Now Serving</span>
-
-                <div style={{ fontSize: '5rem', fontWeight: 900, lineHeight: 1, marginBottom: '8px' }}>
-                  #{currentToken.token_number}
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-6 py-12 relative z-10">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* LEFT COLUMN: Main Counter Display */}
+          <div className="lg:col-span-2 space-y-6">
+            {!isActive && (
+              <motion.div
+                className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-2xl p-8"
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+              >
+                <div className="flex items-center gap-3 mb-4">
+                  <AlertCircle className="text-red-600" size={24} />
+                  <h3 className="text-2xl font-bold text-red-900">Counter Inactive</h3>
                 </div>
-                <div style={{ fontSize: '2rem', fontWeight: 600, marginBottom: '8px' }}>
-                  {currentToken.user_name}
-                </div>
-
-                <div style={{ display: 'flex', gap: '24px', justifyContent: 'center', margin: '24px 0', color: 'var(--text-muted)' }}>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Service</div>
-                    <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>{currentToken.service_type || 'General'}</div>
-                  </div>
-                  <div style={{ width: '1px', background: 'var(--gray-200)' }}></div>
-                  <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Waited</div>
-                    <div style={{ fontWeight: 600, color: 'var(--text-main)' }}>
-                      {Math.floor((new Date() - new Date(currentToken.created_at)) / 60000)}m
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', maxWidth: '400px', margin: '0 auto' }}>
-                  <button
-                    className="btn btn-primary big"
-                    style={{ height: '64px', fontSize: '1.2rem' }}
-                    onClick={() => onUpdateToken(currentToken.id, 'complete')}
-                  >
-                    Complete
-                  </button>
-                  <button
-                    className="btn btn-secondary big"
-                    style={{ height: '64px', fontSize: '1.2rem' }}
-                    onClick={() => onUpdateToken(currentToken.id, 'no-show')}
-                  >
-                    No Show
-                  </button>
-                </div>
-                <div style={{ marginTop: '16px' }}>
-                  <button className="link" style={{ color: 'var(--text-muted)' }} onClick={() => onUpdateToken(currentToken.id, 'recall')}>Recall Customer</button>
-                </div>
-              </div>
-            ) : (
-              <div className="animate-fade-in">
-                <div style={{ fontSize: '4rem', marginBottom: '16px' }}>☕️</div>
-                <h3 style={{ fontSize: '2rem', marginBottom: '16px', color: 'var(--gray-400)' }}>Ready to Serve</h3>
-                <p style={{ color: 'var(--gray-500)', marginBottom: '32px' }}>
-                  {myQueue.length + generalQueue.length > 0
-                    ? `${myQueue.length + generalQueue.length} customers waiting in queue.`
-                    : "Queue is currently empty."}
+                <p className="text-red-800">
+                  This counter is currently disabled by the office manager.<br />
+                  Please ask them to increase the <b>Active Counter Limit</b> to {myCounter}.
                 </p>
-                <button
-                  className="btn btn-black big"
-                  style={{ fontSize: '1.5rem', padding: '20px 48px', boxShadow: 'var(--shadow-lg)' }}
-                  onClick={() => onCall(myCounter)}
-                  disabled={!office || office.state !== 'LIVE'}
+              </motion.div>
+            )}
+
+            {isActive && (
+              <motion.div
+                className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm"
+                variants={itemVariants}
+                whileHover={{ y: -5 }}
+              >
+                {currentToken ? (
+                  <motion.div
+                    className="text-center"
+                    initial={{ opacity: 0, scale: 0.9 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.5 }}
+                  >
+                    <motion.span
+                      className="inline-block px-4 py-2 bg-purple-100 text-purple-700 rounded-full text-sm font-bold mb-6"
+                      animate={{ scale: [1, 1.05, 1] }}
+                      transition={{ duration: 2, repeat: Infinity }}
+                    >
+                      Now Serving
+                    </motion.span>
+
+                    <motion.div
+                      className="text-7xl font-black text-gray-900 mb-4"
+                      animate={{ scale: [1, 1.02, 1] }}
+                      transition={{ duration: 3, repeat: Infinity }}
+                    >
+                      #{currentToken.token_number}
+                    </motion.div>
+
+                    <div className="text-2xl font-bold text-gray-800 mb-6">
+                      {currentToken.user_name}
+                    </div>
+
+                    <div className="flex items-center justify-center gap-6 mb-8">
+                      <div className="text-center">
+                        <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Service</div>
+                        <div className="text-lg font-semibold text-gray-900">{currentToken.service_type || 'General'}</div>
+                      </div>
+                      <div className="w-px h-12 bg-gray-200" />
+                      <div className="text-center">
+                        <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Waited</div>
+                        <div className="text-lg font-semibold text-gray-900">
+                          {Math.floor((new Date() - new Date(currentToken.created_at)) / 60000)}m
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 max-w-md mx-auto mb-4">
+                      <motion.button
+                        onClick={() => onUpdateToken(currentToken.id, 'complete')}
+                        className="px-6 py-4 !bg-gradient-to-r !from-emerald-600 !to-green-600 !text-white rounded-xl font-bold hover:shadow-lg transition-all border-none"
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                      >
+                        <div className="flex items-center justify-center gap-2">
+                          <CheckCircle2 size={20} />
+                          Complete
+                        </div>
+                      </motion.button>
+                      <motion.button
+                        onClick={() => onUpdateToken(currentToken.id, 'no-show')}
+                        className="px-6 py-4 !bg-gray-100 !text-gray-700 rounded-xl font-bold hover:!bg-gray-200 transition-all border-none"
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                      >
+                        <div className="flex items-center justify-center gap-2">
+                          <XCircle size={20} />
+                          No Show
+                        </div>
+                      </motion.button>
+                    </div>
+
+                    <motion.button
+                      onClick={() => onUpdateToken(currentToken.id, 'recall')}
+                      className="text-sm text-purple-600 hover:text-purple-700 font-medium hover:underline border-none bg-transparent"
+                      whileHover={{ scale: 1.05 }}
+                    >
+                      Recall Customer
+                    </motion.button>
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    className="text-center py-12"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ duration: 0.5 }}
+                  >
+                    <motion.div
+                      animate={{ y: [0, -10, 0] }}
+                      transition={{ duration: 4, repeat: Infinity }}
+                    >
+                      <Coffee size={64} className="text-gray-300 mx-auto mb-6" />
+                    </motion.div>
+                    <h3 className="text-3xl font-bold text-gray-400 mb-4">Ready to Serve</h3>
+                    <p className="text-gray-500 mb-8">
+                      {myQueue.length + generalQueue.length > 0
+                        ? `${myQueue.length + generalQueue.length} customers waiting in queue.`
+                        : "Queue is currently empty."}
+                    </p>
+                    <motion.button
+                      onClick={() => onCall(myCounter)}
+                      disabled={!office || office.state !== 'LIVE'}
+                      className="px-8 py-4 !bg-gradient-to-r !from-purple-600 !to-indigo-600 !text-white rounded-xl font-bold text-lg hover:shadow-lg transition-all border-none disabled:opacity-50 disabled:cursor-not-allowed"
+                      whileHover={{ scale: office?.state === 'LIVE' ? 1.05 : 1 }}
+                      whileTap={{ scale: office?.state === 'LIVE' ? 0.95 : 1 }}
+                    >
+                      Call Next Customer
+                    </motion.button>
+                    {office?.state !== 'LIVE' && (
+                      <div className="mt-4 text-red-600 font-semibold flex items-center justify-center gap-2">
+                        <AlertCircle size={16} />
+                        Queue is Paused
+                      </div>
+                    )}
+                  </motion.div>
+                )}
+              </motion.div>
+            )}
+
+            {/* Stats Cards */}
+            {isActive && (
+              <div className="grid grid-cols-2 gap-6">
+                <motion.div
+                  className="bg-gradient-to-br from-emerald-50 to-green-50 rounded-2xl border border-emerald-200 p-6"
+                  variants={itemVariants}
+                  whileHover={{ y: -5 }}
                 >
-                  Call Next Customer
-                </button>
-                {office?.state !== 'LIVE' && <div style={{ color: 'var(--error-600)', marginTop: '16px', fontWeight: 600 }}>Queue is Paused</div>}
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="font-bold text-gray-900">Served Today</h4>
+                    <CheckCircle2 className="text-emerald-600" size={24} />
+                  </div>
+                  <div className="text-4xl font-black text-emerald-700">{completedCount}</div>
+                </motion.div>
+
+                <motion.div
+                  className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl border border-amber-200 p-6"
+                  variants={itemVariants}
+                  whileHover={{ y: -5 }}
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="font-bold text-gray-900">No Shows</h4>
+                    <XCircle className="text-amber-600" size={24} />
+                  </div>
+                  <div className="text-4xl font-black text-amber-700">{noShowCount}</div>
+                </motion.div>
               </div>
             )}
           </div>
-        )}
+
+          {/* RIGHT COLUMN: Queue List */}
+          <div className="lg:col-span-1 space-y-6">
+            {/* Up Next Queue */}
+            <motion.div
+              className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+              variants={itemVariants}
+            >
+              <div className="bg-purple-50 px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Activity size={20} className="text-purple-600" />
+                  Up Next
+                </h3>
+                <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-bold">
+                  {myQueue.length}
+                </span>
+              </div>
+
+              <div className="max-h-[400px] overflow-y-auto">
+                {myQueue.length === 0 ? (
+                  <div className="p-12 text-center">
+                    <Users className="text-gray-300 mx-auto mb-3" size={32} />
+                    <p className="text-sm text-gray-400">No allocations</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
+                    {myQueue.map((t, idx) => (
+                      <motion.div
+                        key={t.id}
+                        className={`p-4 hover:bg-purple-50 transition-colors ${idx === 0 ? 'bg-purple-50 border-l-4 border-purple-500' : ''}`}
+                        initial={{ opacity: 0, x: -20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: idx * 0.05 }}
+                      >
+                        <div className="font-bold text-gray-900 text-lg">#{t.token_number}</div>
+                        <div className="text-sm font-medium text-gray-700 mt-1">{t.user_name}</div>
+                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-2">
+                          <Clock size={12} />
+                          {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait
+                        </div>
+                        <div className="text-xs text-gray-500 mt-1">· {t.service_type || 'General'}</div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+
+                {generalQueue.length > 0 && (
+                  <div className="p-4 bg-gray-50 border-t border-gray-100 text-center text-sm text-gray-600">
+                    + {generalQueue.length} unassigned in General Pool
+                  </div>
+                )}
+              </div>
+            </motion.div>
+
+            {/* Future Bookings */}
+            <motion.div
+              className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
+              variants={itemVariants}
+            >
+              <div className="bg-blue-50 px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                  <Clock size={20} className="text-blue-600" />
+                  Future Bookings
+                </h3>
+                <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-bold">
+                  {futureBookings.length}
+                </span>
+              </div>
+
+              <div className="max-h-[300px] overflow-y-auto">
+                {futureBookings.length === 0 ? (
+                  <div className="p-8 text-center">
+                    <Clock className="text-gray-300 mx-auto mb-2" size={24} />
+                    <p className="text-sm text-gray-400">No future bookings</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-gray-100">
+                    {futureBookings.map((t) => (
+                      <motion.div
+                        key={t.id}
+                        className="p-4 hover:bg-gray-50 transition-colors opacity-75"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 0.75 }}
+                        transition={{ duration: 0.3 }}
+                      >
+                        <div className="flex items-center justify-between mb-1">
+                          <div className="font-bold text-gray-700">#{t.token_number}</div>
+                          <div className="text-xs text-gray-500">
+                            {t.expected_arrival_time
+                              ? new Date(t.expected_arrival_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                              : 'Anytime'}
+                          </div>
+                        </div>
+                        <div className="text-sm text-gray-600">{t.user_name}</div>
+                        <div className="text-xs text-gray-500 mt-1">{t.service_type || 'General'}</div>
+                      </motion.div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        </div>
       </main>
-
-      {/* RIGHT COLUMN: Queue List */}
-      <aside style={{ height: '100%' }}>
-        <div className="card" style={{ height: 'fit-content', maxHeight: 'calc(100vh - 48px)', overflowY: 'auto' }}>
-          <div className="panel-header" style={{ position: 'sticky', top: 0, background: 'white', zIndex: 10, paddingBottom: 12, marginBottom: 0, borderBottom: '1px solid #eee' }}>
-            <h3>Up Next</h3>
-            <span className="badge badge-neutral">{myQueue.length}</span>
-          </div>
-
-          <div className="token-list">
-            {myQueue.length === 0 && <div style={{ padding: '32px 0', textAlign: 'center', color: 'var(--gray-400)' }}>No allocations.</div>}
-
-            {myQueue.map((t, idx) => (
-              <div key={t.id} className="token-row" style={{ padding: '16px', borderLeft: idx === 0 ? '4px solid var(--primary-500)' : '4px solid transparent' }}>
-                <div>
-                  <div style={{ fontSize: '1.1rem', fontWeight: 700 }}>#{t.token_number}</div>
-                  <div style={{ fontSize: '0.9rem' }}>{t.user_name}</div>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait · {t.service_type || 'General'}
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {/* General Pool hint */}
-            {generalQueue.length > 0 && (
-              <div style={{ padding: '12px', textAlign: 'center', borderTop: '1px solid #eee', background: '#f9fafb', fontSize: '0.85rem', color: 'var(--gray-500)' }}>
-                + {generalQueue.length} unassigned in General Pool
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Booked / Future List */}
-        <div className="card" style={{ marginTop: '24px', maxHeight: '40vh', overflowY: 'auto' }}>
-          <div className="panel-header" style={{ position: 'sticky', top: 0, background: 'white', zIndex: 10, paddingBottom: 12, marginBottom: 0, borderBottom: '1px solid #eee' }}>
-            <h3>Future Bookings</h3>
-            <span className="badge badge-neutral">{tokens.filter(t => t.status === 'booked').length}</span>
-          </div>
-
-          <div className="token-list">
-            {tokens.filter(t => t.status === 'booked').length === 0 && <div className="text-muted" style={{ padding: '24px', textAlign: 'center' }}>No future bookings.</div>}
-
-            {tokens.filter(t => t.status === 'booked').map(t => (
-              <div key={t.id} className="token-row" style={{ padding: '12px', opacity: 0.7 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
-                  <div>
-                    <div style={{ fontSize: '0.95rem', fontWeight: 600 }}>#{t.token_number} {t.user_name}</div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{t.service_type || 'General'}</div>
-                  </div>
-                  <div style={{ textAlign: 'right', fontSize: '0.75rem', color: 'var(--gray-500)' }}>
-                    {t.expected_arrival_time ? new Date(t.expected_arrival_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Anytime'}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="card" style={{ marginTop: '24px' }}>
-          <div className="panel-header"><h3>Stats</h3></div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{tokens.filter(t => t.assigned_counter === myCounter && ['COMPLETED'].includes(t.status)).length}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>Served</div>
-            </div>
-            <div style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{tokens.filter(t => t.assigned_counter === myCounter && ['no-show'].includes(t.status)).length}</div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase' }}>No Show</div>
-            </div>
-          </div>
-        </div>
-      </aside>
     </div>
   );
 }
@@ -2720,7 +2897,9 @@ function App() {
 
     // Safety Force Redirect: If view is NOT 'super_admin' but role requires it, force redirect.
     // This catches "customer" fallback or any other state.
-    if (user && (user.role === 'admin' || user.role === 'office_owner') && view !== 'super_admin') {
+    // Fixed: Allow sub-views like settings, history, etc.
+    const validAdminViews = ['super_admin', 'settings', 'history', 'create-office', 'profile'];
+    if (user && (user.role === 'admin' || user.role === 'office_owner') && !validAdminViews.includes(view)) {
       setView('super_admin', false);
     }
 
@@ -3099,6 +3278,12 @@ function App() {
 
   const updateToken = async (id, action) => {
     try {
+      // Check if this is a test token - test tokens have IDs starting with "test-"
+      if (id && id.toString().startsWith('test-')) {
+        setMessage('This is a test token. Create real tokens to test functionality.');
+        return;
+      }
+
       // Staff and Owners use Token Auth (handled by fetchJSON automatically).
       // Legacy Admin uses Admin Key.
       let headers = {};
@@ -3111,12 +3296,15 @@ function App() {
         'complete': 'completed',
         'no-show': 'marked as no-show',
         're-queue': 're-queued',
-        'arrive': 'marked as arrived'
+        'arrive': 'marked as arrived',
+        'recall': 'recalled'
       };
 
       setMessage(`Token ${verbs[action] || action}`);
       fetchOfficeDetail(selectedOfficeId);
-    } catch (err) { setMessage(err.message); }
+    } catch (err) {
+      setMessage(err.message || 'Failed to update token');
+    }
   };
 
   const callCounter = async (counterId) => {
@@ -3191,7 +3379,7 @@ function App() {
 
 
   // Admin / Customer Dashboard
-  const showHeader = !['login', 'register', 'verify-email', 'forgot-password', 'reset-password'].includes(view);
+  const showHeader = !['login', 'register', 'verify-email', 'forgot-password', 'reset-password', 'super_admin', 'customer'].includes(view);
 
   // --- EARLY RETURN FOR CUSTOMER PORTAL (Full Screen) ---
   const isCustomerPortal = (view === 'customer' || (!view && user?.role === 'customer'));
@@ -3212,6 +3400,8 @@ function App() {
           availableOffices={offices}
           onOfficeSelect={setSelectedOfficeId}
           onBook={handleBookingSubmit}
+          tokens={selectedOfficeData?.tokens || []}
+          onUpdateToken={updateToken}
         />
       </>
     );
@@ -3384,10 +3574,10 @@ function App() {
         </>
       ) : view === 'settings' ? (
         <SettingsView user={user} onBack={() => setView('super_admin')} adminKey={adminKey} selectedOfficeId={selectedOfficeId} />
-      ) : view === 'super_admin' ? (
-        <SuperAdminDashboard user={user} office={selectedOffice} onLogout={logout} onNavigate={setView} />
       ) : view === 'super_admin' && user?.role === 'office_owner' ? (
         <OwnerDashboard user={user} offices={offices} onUpdate={loadOffices} onLogout={logout} />
+      ) : view === 'super_admin' ? (
+        <SuperAdminDashboard user={user} office={selectedOffice} onLogout={logout} onNavigate={setView} />
       ) : view === 'staff' && (user?.role === 'staff' || user?.role === 'office_owner') ? (
         <StaffDashboard user={user} office={selectedOffice} tokens={selectedOfficeData?.tokens || []} onCall={callCounter} onUpdateToken={updateToken} onLogout={logout} />
       ) : (view === 'customer' || (!view && user?.role === 'customer')) ? (

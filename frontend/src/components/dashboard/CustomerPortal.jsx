@@ -7,8 +7,11 @@ import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
 import CustomerProfile from './CustomerProfile';
+import CustomerPreferences from './CustomerPreferences';
 
-export default function CustomerPortal({ user, onLogout, onRefresh, office = {}, availableOffices = [], onOfficeSelect, onBook }) {
+import { useMemo } from 'react';
+
+export default function CustomerPortal({ user, onLogout, onRefresh, office = {}, availableOffices = [], onOfficeSelect, onBook, tokens = [], onUpdateToken }) {
     const [selectedOffice, setSelectedOffice] = useState(office?.id);
     const [showBookingModal, setShowBookingModal] = useState(false);
     const [currentStep, setCurrentStep] = useState(1);
@@ -21,6 +24,12 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
     const [showProfileModal, setShowProfileModal] = useState(false);
     const [activeProfileTab, setActiveProfileTab] = useState('profile');
     const [viewMode, setViewMode] = useState('dashboard');
+    const [showProfileCompletionModal, setShowProfileCompletionModal] = useState(false);
+
+    // Search & validation state
+    const [isSearching, setIsSearching] = useState(false);
+    const [searchError, setSearchError] = useState(null);
+    const [resolvedAddress, setResolvedAddress] = useState(null);
 
     const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -58,7 +67,47 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         }));
     }, [user]);
 
-    const [bookedSlots] = useState([]);
+    // Check Profile Completion on Mount
+    useEffect(() => {
+        if (user) {
+            // Simple check: if phone or address is missing (assuming these are critical)
+            // Note: Since 'address' might not be on the base user object yet, checking phone is a good proxy for "new user" or just checking if they've visited profile.
+            // For this feature, we'll aggressively check if we think they are new.
+            // If the user object doesn't have these fields populated, we show the prompt.
+            const isIncomplete = !user.phone || !user.address;
+
+            if (isIncomplete) {
+                // Add Notification
+                setNotifications(prev => {
+                    if (prev.find(n => n.id === 'profile-incomplete')) return prev;
+                    return [
+                        {
+                            id: 'profile-incomplete',
+                            title: 'Complete Your Profile',
+                            message: 'Please complete your profile to reach 100% and enable all features.',
+                            time: 'Now',
+                            type: 'alert',
+                            read: false
+                        },
+                        ...prev
+                    ];
+                });
+
+                // Show Popup
+                const hasSeenPopup = localStorage.getItem('profilePopupSeen');
+                if (!hasSeenPopup) {
+                    setShowProfileCompletionModal(true);
+                    localStorage.setItem('profilePopupSeen', 'true'); // Show only once per session/browser to avoid annoyance, or remove this check to enforce it every time.
+                    // User asked to "pop-up a message", implying a strong prompt. I'll show it.
+                }
+            }
+        }
+    }, [user]);
+
+    const myTokens = useMemo(() => {
+        if (!user || !tokens) return [];
+        return tokens.filter(t => (t.user_id === user.id) && ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
+    }, [user, tokens]);
 
     // Process real data
     const currentOffice = availableOffices.find(o => o.id === selectedOffice) || office || {};
@@ -201,6 +250,10 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         return <CustomerProfile user={user} onBack={() => setViewMode('dashboard')} />;
     }
 
+    if (viewMode === 'preferences') {
+        return <CustomerPreferences onBack={() => setViewMode('dashboard')} />;
+    }
+
     return (
         <div className="min-h-screen bg-[#F8FAFC] font-[GeistSans] text-slate-800">
             {/* Soft Background Gradient */}
@@ -321,7 +374,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                 <User size={14} /> My Profile
                                             </button>
                                             <button
-                                                onClick={() => { setShowProfile(false); setShowProfileModal(true); setActiveProfileTab('preferences'); }}
+                                                onClick={() => { setShowProfile(false); setViewMode('preferences'); }}
                                                 className="w-full text-left px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg flex items-center gap-2 transition-colors"
                                             >
                                                 <Bell size={14} /> Preferences
@@ -456,26 +509,66 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
 
                         {/* Recent Bookings */}
                         <div>
-                            <h3 className="text-lg font-bold text-slate-800 mb-4 px-1">Your Bookings</h3>
-                            {bookedSlots.length > 0 ? (
+                            <h3 className="text-lg font-bold text-slate-800 mb-4 px-1">Your Active Tickets</h3>
+                            {myTokens.length > 0 ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {bookedSlots.map((slot) => (
-                                        <div key={slot.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:border-blue-200 transition-colors group">
-                                            <div className="flex justify-between items-start mb-2">
-                                                <span className="font-bold text-slate-700">{slot.service}</span>
-                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${slot.status === 'confirmed' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                                    {myTokens.map((token) => (
+                                        <div key={token.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:border-blue-200 transition-colors group relative overflow-hidden">
+                                            {/* Status Badge */}
+                                            <div className="flex justify-between items-start mb-3">
+                                                <div className="flex flex-col">
+                                                    <span className="font-bold text-slate-800 text-lg">#{token.token_number}</span>
+                                                    <span className="text-xs text-slate-500 font-medium">{token.service_type || 'General Service'}</span>
+                                                </div>
+                                                <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${token.status === 'CALLED' ? 'bg-green-100 text-green-700 border-green-200' :
+                                                    token.status === 'ALLOCATED' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                                                        'bg-amber-100 text-amber-700 border-amber-200'
                                                     }`}>
-                                                    {slot.status}
+                                                    {token.status}
                                                 </span>
                                             </div>
-                                            <div className="flex items-center gap-2 text-sm text-slate-500">
-                                                <Calendar size={14} />
-                                                {slot.date}
+
+                                            {/* Time Info */}
+                                            <div className="space-y-1 mb-4">
+                                                <div className="flex items-center gap-2 text-sm text-slate-600">
+                                                    <Clock size={14} className="text-slate-400" />
+                                                    <span className="font-medium">
+                                                        {token.status === 'CALLED' ? 'Serving Now' :
+                                                            token.status === 'ALLOCATED' ? 'Head to Counter' :
+                                                                `Est. Wait: ${token.eta || 15} mins`}
+                                                    </span>
+                                                </div>
+                                                {token.service_start_time && (
+                                                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                                                        <Calendar size={14} className="text-slate-400" />
+                                                        <span>{new Date(token.service_start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                                                    </div>
+                                                )}
+                                                {token.assigned_counter && (
+                                                    <div className="flex items-center gap-2 text-xs text-slate-500">
+                                                        <MapPin size={14} className="text-slate-400" />
+                                                        <span>Counter {token.assigned_counter}</span>
+                                                    </div>
+                                                )}
                                             </div>
-                                            <div className="flex items-center gap-2 text-sm text-slate-500 mt-1">
-                                                <Clock size={14} />
-                                                {slot.time}
-                                            </div>
+
+                                            {/* Action Buttons */}
+                                            {token.status === 'ALLOCATED' && token.presence_status !== 'ARRIVED' && (
+                                                <button
+                                                    onClick={() => onUpdateToken(token.id, 'arrive')}
+                                                    className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
+                                                >
+                                                    <MapPin size={14} />
+                                                    I've Arrived
+                                                </button>
+                                            )}
+
+                                            {token.presence_status === 'ARRIVED' && token.status === 'ALLOCATED' && (
+                                                <div className="w-full py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border border-emerald-100">
+                                                    <Check size={14} />
+                                                    You've Arrived
+                                                </div>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
@@ -822,7 +915,46 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                     </div>
                 )}
             </AnimatePresence>
-        </div>
+
+            {/* Profile Completion Modal (Popup) */}
+            <AnimatePresence>
+                {showProfileCompletionModal && (
+                    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.9, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.9, y: 20 }}
+                            className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden text-center p-6"
+                        >
+                            <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <User size={32} />
+                            </div>
+                            <h3 className="text-xl font-bold text-slate-800 mb-2">Complete Your Profile</h3>
+                            <p className="text-slate-500 mb-6 text-sm">
+                                Your profile is incomplete. Please add your contact and address details to get the best experience and reach 100% completion.
+                            </p>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setShowProfileCompletionModal(false)}
+                                    className="flex-1 py-2.5 text-slate-500 font-bold text-sm hover:bg-slate-50 rounded-xl transition-colors"
+                                >
+                                    Later
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        setShowProfileCompletionModal(false);
+                                        setViewMode('profile');
+                                    }}
+                                    className="flex-1 py-2.5 bg-blue-600 text-white font-bold text-sm rounded-xl hover:bg-blue-700 hover:shadow-lg transition-all"
+                                >
+                                    Complete Now
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
+        </div >
     );
 }
 

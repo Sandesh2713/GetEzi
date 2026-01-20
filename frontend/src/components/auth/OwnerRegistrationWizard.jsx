@@ -122,6 +122,36 @@ export function OwnerRegistrationWizard({ onSubmit, onBack }) {
         }
     };
 
+    const handleGeocode = async () => {
+        if (!formData.address && !formData.city) {
+            setError('Please enter at least an Address or City to check location.');
+            return;
+        }
+        setLoading(true);
+        setError('');
+        try {
+            const query = `${formData.address}, ${formData.city}, ${formData.pincode}`;
+            console.log("Geocoding query:", query);
+            const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+            const data = await res.json();
+
+            if (data && data.length > 0) {
+                const { lat, lon } = data[0];
+                const newLat = parseFloat(lat);
+                const newLng = parseFloat(lon);
+                updateField('lat', newLat);
+                updateField('lng', newLng);
+                // Also update city/pincode if we get better data? Maybe keep it simple for now to avoid overwriting user input unexpectedly.
+            } else {
+                setError('Could not find location. Please try adjusting the address or pin manually.');
+            }
+        } catch (err) {
+            setError('Failed to check location. Please pin manually.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     return (
         <div className="fixed inset-0 z-50 bg-gray-50 flex flex-col overflow-hidden">
             {/* Header / Progress */}
@@ -208,6 +238,18 @@ export function OwnerRegistrationWizard({ onSubmit, onBack }) {
                                             <LabeledInput label="Pincode" value={formData.pincode} onChange={e => updateField('pincode', e.target.value)} />
                                         </div>
                                     </div>
+                                    <div className="flex justify-end mb-4">
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={handleGeocode}
+                                            disabled={loading}
+                                            className="text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+                                        >
+                                            {loading ? <Loader2 className="w-3 h-3 animate-spin mr-2" /> : <MapPin className="w-3 h-3 mr-2" />}
+                                            Check Location on Map
+                                        </Button>
+                                    </div>
                                     <div className="h-64 bg-gray-100 rounded-xl overflow-hidden relative border border-gray-300">
                                         <MapPicker lat={formData.lat} lng={formData.lng} onLocationSelect={(lat, lng) => {
                                             updateField('lat', lat);
@@ -255,8 +297,9 @@ export function OwnerRegistrationWizard({ onSubmit, onBack }) {
                                             }}
                                             className="absolute bottom-4 right-4 bg-white p-2 rounded-full shadow-md border border-gray-200 hover:bg-gray-50 text-emerald-600 transition-all z-10"
                                             title="Use my current location"
+                                            disabled={loading}
                                         >
-                                            <LocateFixed className="w-5 h-5" />
+                                            {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <LocateFixed className="w-5 h-5" />}
                                         </button>
                                     </div>
                                     <div className="text-xs text-gray-500 text-center">Click on the map to pin your exact location</div>
@@ -369,7 +412,7 @@ function MapPicker({ lat, lng, onLocationSelect }) {
 
         map.current = new maplibregl.Map({
             container: mapContainer.current,
-            style: 'https://demotiles.maplibre.org/style.json', // Open/Demo style
+            style: 'https://basemaps.cartocdn.com/gl/voyager-gl-style/style.json', // Detailed Street Map
             center: [lng, lat],
             zoom: 12
         });

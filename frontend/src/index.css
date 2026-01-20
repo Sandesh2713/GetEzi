@@ -5,93 +5,77 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-    /* ... unchanged ... */
-}
+    /* --- User's Requested Theme --- */
+    --background: oklch(0.99 0 0);
+    --foreground: oklch(0.145 0 0);
+    --card: oklch(1 0 0);
+    --card-foreground: oklch(0.145 0 0);
+    --popover: oklch(1 0 0);
+    --popover-foreground: oklch(0.145 0 0);
+    --primary: oklch(0.55 0.15 145);
+    --primary-foreground: oklch(1 0 0);
+    --secondary: oklch(0.97 0.01 145);
+    --secondary-foreground: oklch(0.205 0 0);
+    --muted: oklch(0.96 0 0);
+    --muted-foreground: oklch(0.45 0 0);
+    --accent: oklch(0.97 0.01 145);
+    --accent-foreground: oklch(0.205 0 0);
+    --destructive: oklch(0.577 0.245 27.325);
+    --destructive-foreground: oklch(0.577 0.245 27.325);
+    --border: oklch(0.92 0 0);
+    --input: oklch(0.92 0 0);
+    --ring: oklch(0.55 0.15 145);
+    --chart-1: oklch(0.646 0.222 41.116);
+    --chart-2: oklch(0.6 0.118 184.704);
+    --chart-3: oklch(0.398 0.07 227.392);
+    --chart-4: oklch(0.828 0.189 84.429);
+    --chart-5: oklch(0.769 0.188 70.08);
+    --radius: 0.625rem;
+    --sidebar: oklch(0.985 0 0);
+    --sidebar-foreground: oklch(0.145 0 0);
+    --sidebar-primary: oklch(0.205 0 0);
+    --sidebar-primary-foreground: oklch(0.985 0 0);
+    --sidebar-accent: oklch(0.97 0 0);
+    --sidebar-accent-foreground: oklch(0.205 0 0);
+    --sidebar-border: oklch(0.922 0 0);
+    --sidebar-ring: oklch(0.708 0 0);
 
-/* ... unchanged ... */
+    /* --- Compatibility Layer for App.css --- */
+    /* Mapping legacy variables to new theme or standard colors to prevent blank pages */
 
-@layer base {
-    * {
-        @apply border-border outline-ring/50;
-    }
+    /* Grays - Mapping to correct oklch or standard hex for reliability */
+    --gray-50: #f9fafb;
+    --gray-100: #f3f4f6;
+    --gray-200: var(--border);
+    /* Use border color for gray-200 lines */
+    --gray-300: #d1d5db;
+    --gray-400: #9ca3af;
+    --gray-500: var(--muted-foreground);
+    --gray-600: #4b5563;
+    --gray-700: #374151;
+    --gray-800: #1f2937;
+    --gray-900: var(--foreground);
 
-    body {
-        @apply bg-background text-foreground;
-        font-family: 'Roboto', sans-serif;
-    }
-}
+    /* Primary - Mapping to new Primary */
+    --primary-50: oklch(0.95 0.05 145);
+    --primary-100: oklch(0.9 0.1 145);
+    --primary-200: oklch(0.8 0.12 145);
+    --primary-500: var(--primary);
+    --primary-600: var(--primary);
+    /* Main action buttons */
+    --primary-700: oklch(0.45 0.15 145);
 
-/* --- User's Requested Theme --- */
---background: oklch(0.99 0 0);
---foreground: oklch(0.145 0 0);
---card: oklch(1 0 0);
---card-foreground: oklch(0.145 0 0);
---popover: oklch(1 0 0);
---popover-foreground: oklch(0.145 0 0);
---primary: oklch(0.55 0.15 145);
---primary-foreground: oklch(1 0 0);
---secondary: oklch(0.97 0.01 145);
---secondary-foreground: oklch(0.205 0 0);
---muted: oklch(0.96 0 0);
---muted-foreground: oklch(0.45 0 0);
---accent: oklch(0.97 0.01 145);
---accent-foreground: oklch(0.205 0 0);
---destructive: oklch(0.577 0.245 27.325);
---destructive-foreground: oklch(0.577 0.245 27.325);
---border: oklch(0.92 0 0);
---input: oklch(0.92 0 0);
---ring: oklch(0.55 0.15 145);
---chart-1: oklch(0.646 0.222 41.116);
---chart-2: oklch(0.6 0.118 184.704);
---chart-3: oklch(0.398 0.07 227.392);
---chart-4: oklch(0.828 0.189 84.429);
---chart-5: oklch(0.769 0.188 70.08);
---radius: 0.625rem;
---sidebar: oklch(0.985 0 0);
---sidebar-foreground: oklch(0.145 0 0);
---sidebar-primary: oklch(0.205 0 0);
---sidebar-primary-foreground: oklch(0.985 0 0);
---sidebar-accent: oklch(0.97 0 0);
---sidebar-accent-foreground: oklch(0.205 0 0);
---sidebar-border: oklch(0.922 0 0);
---sidebar-ring: oklch(0.708 0 0);
-
-/* --- Compatibility Layer for App.css --- */
-/* Mapping legacy variables to new theme or standard colors to prevent blank pages */
-
-/* Grays - Mapping to correct oklch or standard hex for reliability */
---gray-50: #f9fafb;
---gray-100: #f3f4f6;
---gray-200: var(--border);
-/* Use border color for gray-200 lines */
---gray-300: #d1d5db;
---gray-400: #9ca3af;
---gray-500: var(--muted-foreground);
---gray-600: #4b5563;
---gray-700: #374151;
---gray-800: #1f2937;
---gray-900: var(--foreground);
-
-/* Primary - Mapping to new Primary */
---primary-50: oklch(0.95 0.05 145);
---primary-100: oklch(0.9 0.1 145);
---primary-200: oklch(0.8 0.12 145);
---primary-500: var(--primary);
---primary-600: var(--primary);
-/* Main action buttons */
---primary-700: oklch(0.45 0.15 145);
-
-/* Functional Colors */
---bg-card: var(--card);
---shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
---shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1),
-0 2px 4px -2px rgb(0 0 0 / 0.1);
---shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1),
-0 4px 6px -4px rgb(0 0 0 / 0.1);
---radius-lg: var(--radius);
---radius-md: calc(var(--radius) - 2px);
---radius-sm: calc(var(--radius) - 4px);
---danger: var(--destructive);
+    /* Functional Colors */
+    --bg-card: var(--card);
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1),
+    0 2px 4px -2px rgb(0 0 0 / 0.1);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+    --radius-lg: var(--radius);
+    --radius-md: calc(var(--radius) - 2px);
+    --radius-sm: calc(var(--radius) - 4px);
+    --danger: var(--destructive);
 }
 
 .dark {
@@ -134,7 +118,7 @@
     --gray-900: var(--foreground);
 }
 
-@theme inline {
+@theme {
     --font-sans: "Inter", "Geist", "Geist Fallback";
     --font-mono: "Geist Mono", "Geist Mono Fallback";
     --color-background: var(--background);
@@ -182,5 +166,6 @@
 
     body {
         @apply bg-background text-foreground;
+        font-family: 'Roboto', sans-serif;
     }
 }

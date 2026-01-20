@@ -6,21 +6,21 @@ export default function CustomerProfile({ user, onBack }) { // Added onBack prop
     const [isEditing, setIsEditing] = useState(false);
     const [profileImage, setProfileImage] = useState(null);
     const [formData, setFormData] = useState({
-        fullName: user?.name || 'Sandesh Parit',
-        email: user?.email || 'sandeshparit.in@gmail.com',
-        phone: user?.phone || '+1 (555) 000-0000',
-        dateOfBirth: '1990-05-15',
-        age: 34,
-        gender: 'Male',
-        bloodType: 'O+',
-        address: '1260, Sharada Sadan Mahadev Nagar, Bangalore - 591124',
-        city: 'Bangalore',
-        state: 'Karnataka',
-        zipCode: '591124',
-        emergencyContactName: 'Priya Parit',
-        emergencyContactPhone: '+1 (555) 111-2222',
-        allergies: 'None',
-        medicalNotes: 'Regular checkup patient',
+        fullName: user?.name || '',
+        email: user?.email || '',
+        phone: user?.phone || '',
+        dateOfBirth: user?.dateOfBirth || '',
+        age: user?.age || '',
+        gender: user?.gender || '',
+        bloodType: user?.bloodType || '',
+        address: user?.address || '',
+        city: user?.city || '',
+        state: user?.state || '',
+        zipCode: user?.zipCode || '',
+        emergencyContactName: user?.emergencyContactName || '',
+        emergencyContactPhone: user?.emergencyContactPhone || '',
+        allergies: user?.allergies || '',
+        medicalNotes: user?.medicalNotes || '',
     });
 
     const [editData, setEditData] = useState(formData);
@@ -54,6 +54,7 @@ export default function CustomerProfile({ user, onBack }) { // Added onBack prop
     };
 
     const calculateAge = (dateString) => {
+        if (!dateString) return '--';
         const today = new Date();
         const birthDate = new Date(dateString);
         let age = today.getFullYear() - birthDate.getFullYear();

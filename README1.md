@@ -41,3 +41,4 @@ Open http://localhost:5173. In the Admin tab, paste the same admin key you set i
 - Header name must be exactly `x-admin-key`.
 
 
+

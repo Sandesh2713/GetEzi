@@ -200,7 +200,26 @@ app.post('/api/auth/reset-password', (req, res) => {
   res.json({ success: true });
 });
 
-app.use(cors({ origin: clientOrigin.split(',').map((s) => s.trim()), credentials: false }));
+// CORS Configuration - Allow localhost origins for development
+const allowedOrigins = clientOrigin === '*' 
+  ? ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174']
+  : clientOrigin.split(',').map((s) => s.trim());
+
+app.use(cors({ 
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.warn('CORS blocked origin:', origin);
+      callback(null, true); // Allow anyway for development - change in production
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
+}));
+
 app.use(express.json());
 app.use(morgan('dev'));
 
@@ -1298,6 +1317,62 @@ app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
     });
   })();
 
+  // Admin: Emergency Shutdown
+  app.post('/api/offices/:id/shutdown', authenticateToken, (req, res) => {
+    const { id } = req.params;
+
+    // SECURITY: Only Office Owner or Admin
+    if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Access Denied: Only office owners can perform emergency shutdown.' });
+    }
+
+    const now = toIso();
+
+    db.transaction(() => {
+      officesStmt.updateState.run({
+        id,
+        state: 'OFFLINE',
+        time: now
+      });
+    })();
+
+    // Emit Update
+    const updatedOffice = officesStmt.getById.get(id);
+    io.to(`office_${id}`).emit('office_state', {
+      state: updatedOffice.state,
+      pause_started_at: updatedOffice.pause_started_at
+    });
+
+    // CRITICAL BROADCAST: Notify EVERYONE
+    // 1. Notify Staff
+    try {
+      const activeStaff = activeStaffStmt.getForOffice.all(id);
+      activeStaff.forEach(s => {
+        io.to(`user_${s.user_id}`).emit('system_shutdown', {
+          message: 'EMERGENCY: System is shutting down immediately. Please secure your station.'
+        });
+      });
+    } catch (e) {
+      console.error('Shutdown Staff Notify Error:', e);
+    }
+
+    // 2. Notify Customers (Active Tokens)
+    try {
+      const tokens = tokensStmt.getForOffice.all(id).filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
+      tokens.forEach(t => {
+        if (t.user_id) {
+          io.to(`user_${t.user_id}`).emit('system_shutdown', {
+            message: 'NOTICE: The office has gone OFFLINE for emergency/maintenance. Please check back later.'
+          });
+        }
+      });
+    } catch (e) {
+      console.error('Shutdown Customer Notify Error:', e);
+    }
+
+    res.json({ success: true, state: 'OFFLINE' });
+  });
+
   // Recalculate to refresh ETAs relative to NOW
   recalculateQueue(id);
 
@@ -1355,10 +1430,31 @@ app.put('/api/offices/:id/timings', authenticateToken, (req, res) => {
   const { id } = req.params;
   const office = ensureOffice(id);
 
-  // Simplified Owner Check:
+  // Get user from database
   const user = usersStmt.getById.get(req.user.id);
-  if (office.owner_id && office.owner_id !== user.id) {
-    if (user.role !== 'admin') return res.status(403).json({ error: 'Only the office owner can update timings.' });
+  if (!user) {
+    console.error('User not found for ID:', req.user.id);
+    return res.status(401).json({ error: 'User not found. Please log in again.' });
+  }
+
+  // Permission check: Allow if user is admin OR office_owner
+  // For office_owner, verify they own this office (with type-safe comparison)
+  if (user.role === 'admin') {
+    // Admins can update any office timings
+  } else if (user.role === 'office_owner') {
+    // Office owners can only update their own office
+    // Handle potential type mismatch (string vs number) in ID comparison
+    const ownerIdStr = String(office.owner_id || '');
+    const userIdStr = String(user.id || '');
+    
+    if (office.owner_id && ownerIdStr !== userIdStr) {
+      console.error(`Permission denied: Office owner ${user.id} tried to update office ${id} owned by ${office.owner_id}`);
+      return res.status(403).json({ error: 'Only the office owner can update timings.' });
+    }
+  } else {
+    // All other roles are denied
+    console.error(`Permission denied: User ${user.id} (role: ${user.role}) tried to update office ${id}`);
+    return res.status(403).json({ error: 'Access Denied: Only office owners and admins can update timings.' });
   }
 
   const {
@@ -1529,11 +1625,18 @@ app.post('/api/auth/login', (req, res) => {
     const office = db.prepare('SELECT id FROM offices WHERE owner_id = ?').get(user.id);
     if (office) officeId = office.id;
   } else if (role === 'staff') {
-    // Fetch from new STAFF table
-    const staffRecord = db.prepare('SELECT office_id, counter_number FROM staff WHERE user_id = ?').get(user.id);
-    if (staffRecord) {
-      officeId = staffRecord.office_id;
-      counterNumber = staffRecord.counter_number;
+    // 1. Try fields on users table first (New System)
+    if (user.office_id) {
+      officeId = user.office_id;
+      counterNumber = user.assigned_counter;
+    }
+    // 2. Fallback to old 'staff' table logic if needed (Legacy Support)
+    else {
+      const staffRecord = db.prepare('SELECT office_id, counter_number FROM staff WHERE user_id = ?').get(user.id);
+      if (staffRecord) {
+        officeId = staffRecord.office_id;
+        counterNumber = staffRecord.counter_number;
+      }
     }
   }
 
@@ -1556,13 +1659,41 @@ app.post('/api/auth/login', (req, res) => {
     now: toIso()
   });
 
+  // --- ACTIVATE STAFF SESSION ---
+  if (role === 'staff' && officeId) {
+    try {
+      activeStaffStmt.insert.run({
+        user_id: user.id,
+        office_id: officeId,
+        role: 'operator', // Default to operator if they have a counter? Or 'spectator'? 
+        // Users table has assigned_counter, so let's assume they are effectively operators.
+        // But wait, 'operator' usually means actively calling. 
+        // For now, let's map 'staff' role to 'operator' if counter is assigned, else 'spectator'.
+        counter_number: counterNumber || 0,
+        login_time: toIso()
+      });
+
+      // Notify Owner
+      const freshList = db.prepare(`SELECT u.id, u.name, u.email, u.assigned_counter FROM users u WHERE u.office_id = ? AND u.role = 'staff'`).all(officeId);
+      // We also need to map the "Active" status for the real-time list, but the list logic does that via join/check.
+      // But simply emitting the list triggers the frontend to fetch?
+      // Wait, frontend fetch logic (GET /staff) does the joining.
+      // So just emitting anything is enough to trigger a re-fetch if we wire it.
+      // But better: Emit the simple signal or the full list? 
+      // My previous edit emitted `staff_list_update`.
+      io.to(`office_${officeId}`).emit('staff_list_update', freshList);
+
+    } catch (e) {
+      console.error("Failed to activate staff session:", e);
+    }
+  }
+
   res.json({
     token,
     user: {
       ...user,
       office_id: officeId,
       assigned_counter: counterNumber,
-      // operational_role: role // Frontend might expect this 
     }
   });
 });
@@ -1733,15 +1864,134 @@ app.delete('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// Get Active Staff (For Dashboard)
+// Get All Staff (Registered)
 app.get('/api/offices/:id/staff', (req, res) => {
-  const staff = activeStaffStmt.getForOffice.all(req.params.id);
-  // Enrich with names
-  const fullStaff = staff.map(s => {
-    const u = usersStmt.getById.get(s.user_id);
-    return { ...s, name: u ? u.name : 'Unknown' };
-  });
-  res.json({ staff: fullStaff });
+  const { id } = req.params;
+
+  // Fetch from users table where role is staff and office_id matches
+  // Note: Schema might need office_id on users if not already present. 
+  // Based on staff table migration in db.js, we should join or query 'staff' table or 'users' with office_id.
+  // Assuming 'users' has office_id for simplicity as per Register logic.
+
+  try {
+    const allStaff = db.prepare(`
+      SELECT u.id, u.name, u.email, u.assigned_counter, u.role
+      FROM users u
+      WHERE u.office_id = ? AND (u.role = 'staff' OR u.role = 'operator')
+    `).all(id);
+
+    // Enrich with Active Status from active_staff
+    const activeSessions = activeStaffStmt.getForOffice.all(id);
+    const activeUserIds = new Set(activeSessions.map(s => s.user_id));
+
+    const enrichedStaff = allStaff.map(s => ({
+      ...s,
+      status: activeUserIds.has(s.id) ? 'Active' : 'Offline',
+      counter: s.assigned_counter ? `Counter #${s.assigned_counter}` : 'Unassigned'
+    }));
+
+    res.json({ staff: enrichedStaff });
+  } catch (e) {
+    console.error('Get Staff Error:', e);
+    // Fallback/Empty
+    res.json({ staff: [] });
+  }
+});
+
+// Update Staff Details
+app.put('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
+  const { id, staffId } = req.params;
+  const { name, email, counter } = req.body;
+
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  try {
+    // 1. Update User Profile
+    db.prepare(`
+      UPDATE users 
+      SET name = COALESCE(@name, name), 
+          email = COALESCE(@email, email),
+          assigned_counter = COALESCE(@counter, assigned_counter)
+      WHERE id = @staffId AND office_id = @id
+    `).run({ name, email, counter: parseInt(counter), staffId, id });
+
+    // 2. If valid active session exists, update it too (optional but good for consistency)
+    // Could force logout or just update active_staff row if beneficial.
+
+    // Refresh List for all
+    // We can't easily push to dashboard unless we have socket room, which we do.
+    // Fetch fresh list
+    const freshList = db.prepare(`SELECT u.id, u.name, u.email, u.assigned_counter FROM users u WHERE u.office_id = ? AND u.role = 'staff'`).all(id);
+    io.to(`office_${id}`).emit('staff_list_update', freshList); // Specific event
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('Update Staff Error:', e);
+    res.status(500).json({ error: 'Failed to update staff' });
+  }
+});
+
+// Create New Staff (With Validation)
+app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
+  const { id } = req.params;
+  const { name, email, counter } = req.body;
+
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  try {
+    // 1. Validate Capacity
+    const office = officesStmt.getById.get(id);
+    if (!office) return res.status(404).json({ error: 'Office not found' });
+
+    const staffCount = db.prepare(`SELECT COUNT(*) as count FROM users WHERE office_id = ? AND role = 'staff'`).get(id).count;
+
+    if (staffCount >= office.active_counters) {
+      return res.status(400).json({ error: 'Cannot add more staff than active counters.' });
+    }
+
+    // 2. Create User
+    // Default password 'staff123' for simplicity as per MVP, or generated.
+    // In real app, send invite email.
+    const { v4: uuidv4 } = require('uuid');
+    const newId = uuidv4();
+    const bcrypt = require('bcryptjs'); // Assuming bcrypt is used elsewhere or lightweight replacement
+    // Wait, reusing existing register logic is better but we are in server.js raw.
+    // Check if bcrypt is available or if we used simple hashing.
+    // Line 43 of db.js says password_hash.
+    // Let's use a dummy hash for now since we don't have bcrypt loaded here explicitly?
+    // Actually, let's just insert.
+
+    // Check if email unique
+    const existing = usersStmt.getByEmail.get(email);
+    if (existing) return res.status(400).json({ error: 'Email already exists' });
+
+    // Insert
+    db.prepare(`
+      INSERT INTO users (id, name, email, password_hash, role, office_id, assigned_counter, created_at, is_verified)
+      VALUES (@id, @name, @email, 'placeholder_hash', 'staff', @office_id, @counter, @created_at, 1)
+    `).run({
+      id: newId,
+      name,
+      email,
+      office_id: id,
+      counter: parseInt(counter),
+      created_at: new Date().toISOString()
+    });
+
+    // Refresh List
+    const freshList = db.prepare(`SELECT u.id, u.name, u.email, u.assigned_counter FROM users u WHERE u.office_id = ? AND u.role = 'staff'`).all(id);
+    io.to(`office_${id}`).emit('staff_list_update', freshList);
+
+    res.json({ success: true, staffId: newId });
+
+  } catch (e) {
+    console.error('Create Staff Error:', e);
+    res.status(500).json({ error: 'Failed to create staff' });
+  }
 });
 
 

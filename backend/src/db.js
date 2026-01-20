@@ -232,6 +232,21 @@ try {
 try { db.exec(`ALTER TABLE notifications ADD COLUMN office_id TEXT REFERENCES offices(id)`); } catch (e) { }
 
 // Drop obsolete tables or fields if strict cleanup desired (Optional, keeping safe for now)
+// NEW: Active Staff Session Table (Real-time Status)
+db.exec(`
+CREATE TABLE IF NOT EXISTS active_staff (
+  user_id TEXT PRIMARY KEY,
+  office_id TEXT NOT NULL,
+  role TEXT DEFAULT 'operator',
+  counter_number INTEGER,
+  login_time TEXT,
+  last_seen TEXT,
+  socket_id TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (office_id) REFERENCES offices(id)
+);
+`);
+
 // db.exec(`DROP TABLE IF EXISTS active_staff;`); // We might repurpose active_staff or just use staff table
 
 module.exports = db;
