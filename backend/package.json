@@ -4,6 +4,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
+    "build": "npm rebuild better-sqlite3",
     "dev": "nodemon src/server.js",
     "lint": "echo \"No lint configured\"",
     "engines": {
