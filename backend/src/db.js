@@ -2,7 +2,12 @@ const path = require('path');
 const fs = require('fs');
 const Database = require('better-sqlite3');
 
-const dataDir = path.join(__dirname, '..', 'data');
+// 🔐 RENDER SAFE STORAGE
+const dataDir =
+  process.env.RENDER
+    ? '/data'
+    : path.join(__dirname, '..', 'data');
+
 const dbPath = path.join(dataDir, 'queue.db');
 
 fs.mkdirSync(dataDir, { recursive: true });
@@ -10,6 +15,7 @@ fs.mkdirSync(dataDir, { recursive: true });
 const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
+
 
 // Initialize tables for offices, tokens, and users (lightweight user store for contact details).
 db.exec(`

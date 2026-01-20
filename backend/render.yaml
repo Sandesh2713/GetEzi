@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: getezi-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
