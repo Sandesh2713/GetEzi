@@ -1,8 +1,8 @@
 {
     "rewrites": [
         {
-            "source": "/(.*)",
-            "destination": "/"
+            "source": "/api/(.*)",
+            "destination": "https://getezi-backend-1.onrender.com/$1"
         }
     ]
 }
