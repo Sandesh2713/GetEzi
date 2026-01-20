@@ -3,9 +3,12 @@
   "version": "1.0.0",
   "main": "src/server.js",
   "scripts": {
-    "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "lint": "echo \"No lint configured\""
+    "dev": "nodemon src/server.js",
+    "lint": "echo \"No lint configured\"",
+    "engines": {
+      "node": "18.x"
+    }
   },
   "keywords": [],
   "author": "",
