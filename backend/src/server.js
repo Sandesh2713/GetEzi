@@ -201,24 +201,22 @@ app.post('/api/auth/reset-password', (req, res) => {
 });
 
 // CORS Configuration - Allow localhost origins for development
-const allowedOrigins = clientOrigin === '*' 
+const allowedOrigins = clientOrigin === '*'
   ? ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174']
   : clientOrigin.split(',').map((s) => s.trim());
 
-app.use(cors({ 
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin || allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.warn('CORS blocked origin:', origin);
-      callback(null, true); // Allow anyway for development - change in production
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-admin-key']
+
+// 🔥 DEV TUNNEL SAFE CORS
+app.use(cors({
+  origin: "*",
+  credentials: false,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "x-admin-key"]
 }));
+
+// Handle preflight
+app.options(/.*/, cors());
+
 
 app.use(express.json());
 app.use(morgan('dev'));
@@ -1134,7 +1132,9 @@ app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
       service_start_time: null,
       expected_completion_time: null,
       now: toIso(),
-      eta: null
+      eta: null,
+      assigned_counter: null,
+      called_by_counter: null
     });
 
     if (token.user_id) {
@@ -1446,7 +1446,7 @@ app.put('/api/offices/:id/timings', authenticateToken, (req, res) => {
     // Handle potential type mismatch (string vs number) in ID comparison
     const ownerIdStr = String(office.owner_id || '');
     const userIdStr = String(user.id || '');
-    
+
     if (office.owner_id && ownerIdStr !== userIdStr) {
       console.error(`Permission denied: Office owner ${user.id} tried to update office ${id} owned by ${office.owner_id}`);
       return res.status(403).json({ error: 'Only the office owner can update timings.' });
@@ -1513,6 +1513,7 @@ const notificationsStmt = {
   markRead: db.prepare(`UPDATE notifications SET is_read = 1 WHERE id = ?`),
   insert: db.prepare(`INSERT INTO notifications (id, user_id, message, is_read, created_at) VALUES (@id, @user_id, @message, 0, @created_at)`)
 };
+
 
 app.get('/api/notifications', (req, res) => {
   const { userId } = req.query;

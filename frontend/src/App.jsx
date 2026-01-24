@@ -2796,9 +2796,37 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
                 )}
 
                 {generalQueue.length > 0 && (
-                  <div className="p-4 bg-gray-50 border-t border-gray-100 text-center text-sm text-gray-600">
-                    + {generalQueue.length} unassigned in General Pool
-                  </div>
+                  <>
+                    <div className="bg-gray-50 px-6 py-3 border-t border-b border-gray-200 flex items-center justify-between">
+                      <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
+                        <Users size={16} />
+                        General Pool
+                      </h3>
+                      <span className="px-2 py-0.5 bg-gray-200 text-gray-600 rounded-full text-xs font-bold">
+                        {generalQueue.length}
+                      </span>
+                    </div>
+                    <div className="divide-y divide-gray-100 bg-gray-50/50">
+                      {generalQueue.map((t) => (
+                        <motion.div
+                          key={t.id}
+                          className="p-4 hover:bg-gray-100 transition-colors opacity-80 hover:opacity-100"
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="font-bold text-gray-700 text-lg">#{t.token_number}</div>
+                            <div className="text-xs text-gray-500">{t.service_type || 'General'}</div>
+                          </div>
+                          <div className="text-sm font-medium text-gray-600 mt-1">{t.user_name}</div>
+                          <div className="flex items-center gap-2 text-xs text-gray-400 mt-2">
+                            <Clock size={12} />
+                            {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait
+                          </div>
+                        </motion.div>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             </motion.div>
@@ -3357,6 +3385,8 @@ function App() {
       fetchOfficeDetail(selectedOfficeId);
     } catch (err) { setMessage(err.message); }
   };
+
+
 
   if (authLoading) return <div>Loading app...</div>;
 

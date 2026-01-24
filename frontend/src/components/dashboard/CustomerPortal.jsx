@@ -154,7 +154,12 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
             customerEmail: formData.email,
             customerContact: formData.phone,
             serviceType: formData.service,
-            locationId: formData.location,
+            // Match backend expectation: it looks for 'lat', 'lng', 'customerAddress'
+            // The handleBookingSubmit in App.jsx maps userLat/userLng to body lat/lng.
+            // So we send userLat/userLng here to match App.jsx expectation.
+            userLat: formData.userCoords?.[1],
+            userLng: formData.userCoords?.[0],
+            customerAddress: resolvedAddress || 'Pinned Location',
             note: 'Booked via Portal'
         });
         setShowBookingModal(false);
