@@ -149,6 +149,15 @@ CREATE TABLE IF NOT EXISTS active_staff (
   last_seen TEXT,
   socket_id TEXT
 );
+
+CREATE TABLE IF NOT EXISTS office_holidays (
+  id TEXT PRIMARY KEY,
+  office_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  reason TEXT,
+  type TEXT DEFAULT 'OFFICE',
+  created_at TEXT NOT NULL
+);
 `);
 
 // ===== SAFE MIGRATIONS =====
@@ -164,6 +173,7 @@ const migrations = [
   "ALTER TABLE tokens ADD COLUMN expected_arrival_time TEXT",
   "ALTER TABLE tokens ADD COLUMN presence_status TEXT DEFAULT 'PENDING'",
   "ALTER TABLE tokens ADD COLUMN arrival_confirmed_at TEXT",
+  "ALTER TABLE tokens ADD COLUMN appointment_date TEXT",
 
   "ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'customer'",
   "ALTER TABLE users ADD COLUMN is_verified INTEGER DEFAULT 0",
@@ -179,6 +189,8 @@ const migrations = [
   "ALTER TABLE offices ADD COLUMN lunch_flex_minutes INTEGER DEFAULT 30",
   "ALTER TABLE offices ADD COLUMN auto_noshow_enabled INTEGER DEFAULT 0",
   "ALTER TABLE offices ADD COLUMN auto_noshow_grace_minutes INTEGER DEFAULT 5",
+  "ALTER TABLE offices ADD COLUMN working_days TEXT DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat'",
+  "ALTER TABLE offices ADD COLUMN allow_sunday INTEGER DEFAULT 0",
 ];
 
 for (const sql of migrations) {

@@ -224,8 +224,10 @@ app.use(morgan('dev'));
 const toIso = () => new Date().toISOString();
 
 // Middleware: Authenticate Token
+// Middleware: Authenticate Token
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
+  // console.log('[AuthDebug] Header:', authHeader); // Debug log
   if (!authHeader) return res.status(401).json({ error: 'No token' });
   const token = authHeader.split(' ')[1];
   try {
@@ -233,6 +235,7 @@ const authenticateToken = (req, res, next) => {
     req.user = decoded;
     next();
   } catch (err) {
+    console.error('[AuthError] Token verification failed:', err.message);
     return res.status(403).json({ error: 'Invalid token' });
   }
 };
@@ -260,11 +263,11 @@ const officesStmt = {
   insert: db.prepare(`
     INSERT INTO offices (
       id, name, service_type, daily_capacity, available_today, operating_hours, latitude, longitude, avg_service_minutes, owner_id, created_at, counter_count, max_allocated,
-      address, opening_time, closing_time, lunch_start, lunch_end, auto_noshow_enabled
+      address, opening_time, closing_time, lunch_start, lunch_end, auto_noshow_enabled, working_days, allow_sunday
     )
     VALUES (
       @id, @name, @service_type, @daily_capacity, @daily_capacity, @operating_hours, @latitude, @longitude, @avg_service_minutes, @owner_id, @created_at, @counter_count, @max_allocated,
-      @address, @opening_time, @closing_time, @lunch_start, @lunch_end, @auto_noshow_enabled
+      @address, @opening_time, @closing_time, @lunch_start, @lunch_end, @auto_noshow_enabled, @working_days, @allow_sunday
     )
   `),
   updateStats: db.prepare(`UPDATE offices SET avg_service_minutes = @avg WHERE id = @id`),
@@ -275,7 +278,8 @@ const officesStmt = {
       address = @address, latitude = @latitude, longitude = @longitude,
       opening_time = @opening_time, closing_time = @closing_time,
       lunch_start = @lunch_start, lunch_end = @lunch_end, lunch_flex_minutes = @lunch_flex_minutes,
-      auto_noshow_enabled = @auto_noshow_enabled, auto_noshow_grace_minutes = @auto_noshow_grace_minutes
+      auto_noshow_enabled = @auto_noshow_enabled, auto_noshow_grace_minutes = @auto_noshow_grace_minutes,
+      working_days = @working_days, allow_sunday = @allow_sunday, daily_capacity = @daily_capacity
     WHERE id = @id
   `),
 };
@@ -290,8 +294,8 @@ const tokensStmt = {
     ORDER BY t.created_at ASC
   `),
   insert: db.prepare(`
-    INSERT INTO tokens (id, office_id, user_id, user_name, user_contact, status, token_number, created_at, lat, lng, travel_time_minutes, service_type, customer_address)
-    VALUES (@id, @office_id, @user_id, @user_name, @user_contact, 'WAIT', @token_number, @created_at, @lat, @lng, @travel_time_minutes, @service_type, @customer_address)
+    INSERT INTO tokens (id, office_id, user_id, user_name, user_contact, status, token_number, created_at, lat, lng, travel_time_minutes, service_type, customer_address, appointment_date)
+    VALUES (@id, @office_id, @user_id, @user_name, @user_contact, @status, @token_number, @created_at, @lat, @lng, @travel_time_minutes, @service_type, @customer_address, @appointment_date)
   `),
   updateStatus: db.prepare(`
     UPDATE tokens SET 
@@ -304,12 +308,42 @@ const tokensStmt = {
       completed_at = COALESCE(@completed_at, completed_at),
       eta_minutes = @eta,
       assigned_counter = COALESCE(@assigned_counter, assigned_counter),
-      called_by_counter = COALESCE(@called_by_counter, called_by_counter)
+      called_by_counter = COALESCE(@called_by_counter, called_by_counter),
+      appointment_date = COALESCE(@appointment_date, appointment_date)
     WHERE id = @id
   `),
+  countByDate: db.prepare(`SELECT COUNT(*) as count FROM tokens WHERE office_id = ? AND appointment_date = ? AND status NOT IN ('cancelled', 'no-show')`),
   getMaxTokenNum: db.prepare(`SELECT COALESCE(MAX(token_number), 0) as maxNum FROM tokens WHERE office_id = ?`),
   markArrived: db.prepare(`UPDATE tokens SET presence_status = 'ARRIVED', arrival_confirmed_at = @now WHERE id = @id`),
   updateEligibility: db.prepare(`UPDATE tokens SET eligibility_time = @time WHERE id = @id`),
+};
+
+// --- VALIDATION HELPERS ---
+const isHoliday = (officeId, dateStr) => {
+  return !!officeHolidaysStmt.checkDate.get(officeId, dateStr);
+};
+
+const isClosedDay = (office, dateStr) => {
+  const date = new Date(dateStr);
+  const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayName = days[date.getDay()];
+
+  // Special Sunday Logic (overrides working_days)
+  if (dayName === 'Sun') {
+    return !office.allow_sunday;
+  }
+
+  // Default working days if not set
+  const workingDays = (office.working_days || 'Mon,Tue,Wed,Thu,Fri,Sat').split(',').map(d => d.trim());
+
+  if (!workingDays.includes(dayName)) return true;
+  return false;
+};
+
+const isCapacityFull = (officeId, dateStr, capacity) => {
+  if (!capacity || capacity <= 0) return false;
+  const count = tokensStmt.countByDate.get(officeId, dateStr).count;
+  return count >= capacity;
 };
 
 const usersStmt = {
@@ -344,8 +378,9 @@ const historyStmt = {
     INSERT INTO token_history (id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, archived_at, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time, counter_number)
     SELECT id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, @archivedAt, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time, called_by_counter
     FROM tokens
+    WHERE appointment_date IS NULL OR appointment_date <= @today
   `),
-  deleteArchivedTokens: db.prepare(`DELETE FROM tokens`), // Wipes active tokens table
+  deleteArchivedTokens: db.prepare(`DELETE FROM tokens WHERE appointment_date IS NULL OR appointment_date <= @today`), // Wipes active tokens table (respecting future)
   cleanupOldHistory: db.prepare(`DELETE FROM token_history WHERE archived_at < ?`), // Global fallback
   cleanupForOffice: db.prepare(`DELETE FROM token_history WHERE office_id = ? AND archived_at < ?`),
   getAll: db.prepare(`SELECT * FROM token_history ORDER BY created_at DESC LIMIT 1000`), // Limit for safety
@@ -366,6 +401,13 @@ const activeStaffStmt = {
   updateRole: db.prepare(`UPDATE active_staff SET role = 'OPERATOR', counter_number = ? WHERE user_id = ?`),
   updateHeartbeat: db.prepare(`UPDATE active_staff SET last_seen = @now, socket_id = @socket_id WHERE user_id = @user_id`),
   getStale: db.prepare(`SELECT * FROM active_staff WHERE last_seen < @cutoff`)
+};
+
+const officeHolidaysStmt = {
+  getByOffice: db.prepare(`SELECT * FROM office_holidays WHERE office_id = ? ORDER BY date ASC`),
+  insert: db.prepare(`INSERT INTO office_holidays (id, office_id, date, reason, type, created_at) VALUES (@id, @office_id, @date, @reason, @type, @created_at)`),
+  delete: db.prepare(`DELETE FROM office_holidays WHERE id = ? AND office_id = ?`),
+  checkDate: db.prepare(`SELECT * FROM office_holidays WHERE office_id = ? AND date = ?`)
 };
 
 // --- STAFF LOGIC REMOVED (countersStmt, syncCounters, assignStaffRole, releaseStaff) ---
@@ -432,7 +474,8 @@ const recalculateQueue = (officeId) => {
 
   let allTokens = [];
   try {
-    allTokens = tokensStmt.getForOffice.all(officeId);
+    const today = new Date().toISOString().split('T')[0];
+    allTokens = tokensStmt.getForOffice.all(officeId).filter(t => !t.appointment_date || t.appointment_date === today);
   } catch (e) {
     console.error("FATAL: recalculateQueue -> tokensStmt.getForOffice.all failed", e);
     throw e;
@@ -479,7 +522,8 @@ const recalculateQueue = (officeId) => {
           now: now,
           eta: null,
           assigned_counter: null,
-          called_by_counter: null
+          called_by_counter: null,
+          appointment_date: null
         });
 
         // Promote Good Token
@@ -494,7 +538,8 @@ const recalculateQueue = (officeId) => {
           now: now,
           eta: null,
           assigned_counter: badToken.assigned_counter, // Inherit specific counter!
-          called_by_counter: null
+          called_by_counter: null,
+          appointment_date: null
         });
 
         // Update local lists for rest of function to be semi-accurate (though function will likely re-run soon)
@@ -544,7 +589,8 @@ const recalculateQueue = (officeId) => {
             now: toIso(),
             eta: null,
             assigned_counter: token.assigned_counter || null,
-            called_by_counter: token.called_by_counter || null
+            called_by_counter: token.called_by_counter || null,
+            appointment_date: null
           });
           // Notify
           const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : token.user_email;
@@ -625,7 +671,8 @@ const recalculateQueue = (officeId) => {
         eta: null,
         eta: null,
         assigned_counter: bestCounter, // ASSIGN HERE
-        called_by_counter: null
+        called_by_counter: null,
+        appointment_date: null
       });
       token.status = 'ALLOCATED';
       token.allocation_time = now;
@@ -709,7 +756,8 @@ const recalculateQueue = (officeId) => {
       eta: waitMinutes,
       now: toIso(),
       assigned_counter: token.assigned_counter || null,
-      called_by_counter: token.called_by_counter || null
+      called_by_counter: token.called_by_counter || null,
+      appointment_date: null
     });
   });
 
@@ -797,18 +845,85 @@ const ensureOffice = (id) => {
 app.get('/health', (req, res) => res.json({ status: 'ok', time: toIso() }));
 
 // Create Token (Book)
+// --- Holiday Management ---
+app.get('/api/offices/:id/holidays', (req, res) => {
+  try {
+    const holidays = officeHolidaysStmt.getByOffice.all(req.params.id);
+    res.json(holidays);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/offices/:id/holidays', authenticateToken, requireOffice, requireRole(['office_owner', 'admin']), (req, res) => {
+  try {
+    const { date, reason, type } = req.body;
+    if (!date) return res.status(400).json({ error: 'Date is required' });
+    const id = uuidv4();
+    officeHolidaysStmt.insert.run({
+      id,
+      office_id: req.params.id,
+      date, // YYYY-MM-DD
+      reason: reason || 'Holiday',
+      type: type || 'OFFICE',
+      created_at: toIso()
+    });
+    res.status(201).json({ success: true, id });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete('/api/offices/:id/holidays/:holidayId', authenticateToken, requireOffice, requireRole(['office_owner', 'admin']), (req, res) => {
+  try {
+    officeHolidaysStmt.delete.run(req.params.holidayId, req.params.id);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Create Token (Book)
 app.post('/api/offices/:id/book', (req, res) => {
   try {
     const { id } = req.params;
     const office = ensureOffice(id);
+    const { customerName, customerContact, customerEmail, lat, lng, userId, serviceType, customerAddress, travelTime: clientTravelTime, appointmentDate } = req.body;
 
-    // [New] Check Office Status
-    const status = OfficeStatusEngine.getStatus(office);
-    if (status.status === 'CLOSED') {
-      return res.status(400).json({ error: status.message });
+    // --- 1. APPOINTMENT DATE VALIDATION ---
+    // If appointmentDate is provided, validate it. If not, assumed TODAY (Wait List).
+    // Note: If today is holiday/closed, can we join Wait List? "User can select custom date".
+    // If no date provided, default to TODAY.
+
+    // Normalize Date
+    let dateStr = appointmentDate || new Date().toISOString().split('T')[0];
+    const serverDate = new Date().toISOString().split('T')[0];
+    const isFuture = dateStr > serverDate;
+
+    console.log(`[DEBUG] Token Create: DateStr=${dateStr}, ServerDate(UTC)=${serverDate}, isFuture=${isFuture}`);
+
+    // Status Check (Only if Today)
+    if (!isFuture) {
+      const status = OfficeStatusEngine.getStatus(office);
+      if (status.status === 'CLOSED') {
+        return res.status(400).json({ error: status.message });
+      }
     }
 
-    const { customerName, customerContact, customerEmail, lat, lng, userId, serviceType, customerAddress, travelTime: clientTravelTime } = req.body;
+    // Holiday Check
+    if (isHoliday(id, dateStr)) {
+      return res.status(400).json({ error: 'Office is closed on this date (Holiday).' });
+    }
+
+    // Working Day Check
+    if (isClosedDay(office, dateStr)) {
+      return res.status(400).json({ error: 'Office is closed on this day of the week.' });
+    }
+
+    // Capacity Check
+    if (isCapacityFull(id, dateStr, office.daily_capacity)) {
+      return res.status(400).json({ error: 'Daily capacity reached for this date.' });
+    }
 
     if (!customerName || !customerEmail) return res.status(400).json({ error: 'Name and Email are required' });
     if ((!lat || !lng) && !customerAddress) return res.status(400).json({ error: 'Valid Location required' });
@@ -834,18 +949,24 @@ app.post('/api/offices/:id/book', (req, res) => {
       lng: lng || null,
       travel_time_minutes: travelTime,
       service_type: serviceType || 'General',
-      customer_address: customerAddress || ''
+      customer_address: customerAddress || '',
+      customer_address: customerAddress || '',
+      appointment_date: dateStr, // INSERT THIS
+      status: isFuture ? 'FUTURE' : 'WAIT'
     };
 
     db.transaction(() => {
       tokensStmt.insert.run(token);
     })();
 
-    try {
-      recalculateQueue(id);
-    } catch (calcErr) {
-      console.error('Recalculate Queue Failed (Non-fatal):', calcErr);
-      // Do not fail the request if calc fails
+    // Only Recalculate if TODAY
+    const today = new Date().toISOString().split('T')[0];
+    if (dateStr === today) {
+      try {
+        recalculateQueue(id);
+      } catch (calcErr) {
+        console.error('Recalculate Queue Failed (Non-fatal):', calcErr);
+      }
     }
 
     // Email Notification
@@ -856,7 +977,7 @@ app.post('/api/offices/:id/book', (req, res) => {
         token.user_name,
         token.token_number,
         office.name,
-        office.address || '', // Schema might not have address
+        office.address || '',
         token.created_at
       ));
     }
@@ -969,7 +1090,8 @@ app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, r
           now,
           eta: 0,
           assigned_counter: cNum,
-          called_by_counter: cNum
+          called_by_counter: cNum,
+          appointment_date: null
         });
       })();
     } catch (e) {
@@ -1039,7 +1161,8 @@ app.post('/api/tokens/:id/complete', authenticateToken, (req, res) => {
       now: toIso(),
       eta: null,
       assigned_counter: token.assigned_counter || null,
-      called_by_counter: token.called_by_counter || null
+      called_by_counter: token.called_by_counter || null,
+      appointment_date: null
     });
 
     if (token.user_id) {
@@ -1090,7 +1213,8 @@ app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
       service_start_time: null,
       expected_completion_time: null,
       now: toIso(),
-      eta: null
+      eta: null,
+      appointment_date: null
     });
   })();
 
@@ -1134,7 +1258,8 @@ app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
       now: toIso(),
       eta: null,
       assigned_counter: null,
-      called_by_counter: null
+      called_by_counter: null,
+      appointment_date: null
     });
 
     if (token.user_id) {
@@ -1641,6 +1766,20 @@ app.post('/api/auth/login', (req, res) => {
     }
   }
 
+  // --- STAFF LOGIN RESTRICTIONS ---
+  if (role === 'staff' && officeId) {
+    const today = new Date().toISOString().split('T')[0];
+    // Check Holiday
+    if (isHoliday(officeId, today)) {
+      return res.status(403).json({ error: 'Login Blocked: Office is closed for Holiday.' });
+    }
+    // Check Closed Day
+    const office = officesStmt.getById.get(officeId);
+    if (office && isClosedDay(office, today)) {
+      return res.status(403).json({ error: 'Login Blocked: Office is closed today.' });
+    }
+  }
+
   // Generate Scoped Token
   const payload = {
     id: user.id,
@@ -1727,39 +1866,7 @@ app.get('/api/offices/:id/staff-list', authenticateToken, (req, res) => {
 });
 
 // Add Staff
-app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
-  const { id } = req.params;
-  const { name, email, password, counterNumber } = req.body;
 
-  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
-  if (!name || !email || !password || !counterNumber) return res.status(400).json({ error: 'Missing fields' });
-
-  const existing = usersStmt.getByEmail.get(email);
-  if (existing) return res.status(400).json({ error: 'Email already exists' });
-
-  const hash = bcrypt.hashSync(password, 10);
-  const newId = uuidv4();
-
-  try {
-    usersStmt.insert.run({
-      id: newId,
-      name,
-      email,
-      hash,
-      role: 'staff',
-      created_at: toIso()
-    });
-
-    // Update office link and counter
-    db.prepare(`UPDATE users SET office_id = ?, assigned_counter = ? WHERE id = ?`)
-      .run(id, counterNumber, newId);
-
-    res.json({ success: true, staff: { id: newId, name, email, assigned_counter: counterNumber } });
-  } catch (e) {
-    console.error("Add Staff Error:", e);
-    res.status(500).json({ error: 'Failed to create staff' });
-  }
-});
 
 // Register
 app.post('/api/auth/register', (req, res) => {
@@ -1937,11 +2044,13 @@ app.put('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
 // Create New Staff (With Validation)
 app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
   const { id } = req.params;
-  const { name, email, counter } = req.body;
+  const { name, email, counter, password } = req.body;
 
   if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access Denied' });
   }
+
+  if (!password) return res.status(400).json({ error: 'Password is required for new staff.' });
 
   try {
     // 1. Validate Capacity
@@ -1955,16 +2064,11 @@ app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
     }
 
     // 2. Create User
-    // Default password 'staff123' for simplicity as per MVP, or generated.
-    // In real app, send invite email.
     const { v4: uuidv4 } = require('uuid');
     const newId = uuidv4();
-    const bcrypt = require('bcryptjs'); // Assuming bcrypt is used elsewhere or lightweight replacement
-    // Wait, reusing existing register logic is better but we are in server.js raw.
-    // Check if bcrypt is available or if we used simple hashing.
-    // Line 43 of db.js says password_hash.
-    // Let's use a dummy hash for now since we don't have bcrypt loaded here explicitly?
-    // Actually, let's just insert.
+
+    // Hash Password
+    const hash = bcrypt.hashSync(password, 10);
 
     // Check if email unique
     const existing = usersStmt.getByEmail.get(email);
@@ -1973,11 +2077,12 @@ app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
     // Insert
     db.prepare(`
       INSERT INTO users (id, name, email, password_hash, role, office_id, assigned_counter, created_at, is_verified)
-      VALUES (@id, @name, @email, 'placeholder_hash', 'staff', @office_id, @counter, @created_at, 1)
+      VALUES (@id, @name, @email, @hash, 'staff', @office_id, @counter, @created_at, 1)
     `).run({
       id: newId,
       name,
       email,
+      hash,
       office_id: id,
       counter: parseInt(counter),
       created_at: new Date().toISOString()
@@ -2191,7 +2296,8 @@ const recalculateArrivalLikelihood = (officeId) => {
           called_at: null,
           completed_at: toIso(),
           now: toIso(),
-          eta: null
+          eta: null,
+          appointment_date: null
         });
         // Update Stats
         if (token.user_id) {
@@ -2239,8 +2345,9 @@ cron.schedule('0 0 * * *', () => {
   console.log('Running Daily Archival...');
   try {
     const now = toIso();
-    const info = historyStmt.archive.run({ archivedAt: now });
-    historyStmt.deleteArchivedTokens.run();
+    const today = now.split('T')[0];
+    const info = historyStmt.archive.run({ archivedAt: now, today });
+    historyStmt.deleteArchivedTokens.run({ today }); // Pass today
     console.log(`Archived ${info.changes} tokens.`);
     io.emit('queue_update', { all: true }); // Resync all clients
   } catch (err) {
@@ -2269,6 +2376,77 @@ cron.schedule('0 1 * * *', () => {
   } catch (err) {
     console.error('Cleanup Failed:', err);
   }
+});
+
+// --- REMINDERS ---
+
+// 1. Next Day Reminder (8 PM)
+cron.schedule('0 20 * * *', () => {
+  console.log('Running Next Day Reminders...');
+  try {
+    const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+    // We need a way to find tokens by date globally or iterate.
+    // Efficient way: query tokens table directly.
+    const tokens = db.prepare(`SELECT * FROM tokens WHERE appointment_date = ? AND status IN ('WAIT', 'ALLOCATED')`).all(tomorrow);
+
+    tokens.forEach(t => {
+      const recipientEmail = (t.user_contact && t.user_contact.includes('@')) ? t.user_contact : (t.user_id ? usersStmt.getById.get(t.user_id)?.email : null);
+      if (recipientEmail) {
+        // Assuming we have a template or generic message
+        sendEmail(recipientEmail, 'Reminder: Appointment Tomorrow - GetEzi', emailTemplates.bookingConfirmation(
+          t.user_name, t.token_number, 'Your Office', '', t.created_at
+        ).replace('Booking Confirmed', 'Appointment Reminder').replace('Your booking has been confirmed', 'This is a reminder for your appointment tomorrow'));
+        // Better to have dedicated template but reusing for now to save space
+      }
+    });
+  } catch (e) { console.error("Reminder Job Error:", e); }
+});
+
+// 2. Midnight Migration (FUTURE -> WAIT)
+cron.schedule('0 0 * * *', () => {
+  console.log('Running Midnight Migration (FUTURE -> WAIT)...');
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const info = db.prepare(`
+      UPDATE tokens
+      SET status = 'WAIT', allocation_time = NULL 
+      WHERE appointment_date = ? AND status = 'FUTURE'
+    `).run(today);
+
+    console.log(`Migrated ${info.changes} tokens to Active Queue for ${today}`);
+
+    // Trigger Recalc for all offices that had changes?
+    // Hard to know which offices. Just iterate active offices or leave it to be picked up.
+    // Ideally we iterate all "Active" offices.
+    const offices = db.prepare('SELECT id FROM offices WHERE state = "LIVE"').all();
+    offices.forEach(o => {
+      try { recalculateQueue(o.id); } catch (e) { }
+    });
+
+  } catch (e) { console.error("Midnight Migration Error:", e); }
+});
+
+// 2. Same Day Reminder (7 AM)
+cron.schedule('0 7 * * *', () => {
+  console.log('Running Same Day Reminders...');
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const tokens = db.prepare(`SELECT * FROM tokens WHERE appointment_date = ? AND status IN ('WAIT', 'ALLOCATED')`).all(today);
+
+    tokens.forEach(t => {
+      const recipientEmail = (t.user_contact && t.user_contact.includes('@')) ? t.user_contact : (t.user_id ? usersStmt.getById.get(t.user_id)?.email : null);
+      if (recipientEmail) {
+        sendEmail(recipientEmail, 'Reminder: Appointment Today - GetEzi', `
+           <div style="font-family: sans-serif; padding: 20px;">
+             <h2>Appointment Today</h2>
+             <p>Hello ${t.user_name},</p>
+             <p>This is a reminder that you have an appointment/token <strong>#${t.token_number}</strong> scheduled for today.</p>
+             <p>Please check the app for live status.</p>
+           </div>
+         `);
+      }
+    });
+  } catch (e) { console.error("Same Day Reminder Job Error:", e); }
 });
 
 // Debug Endpoint

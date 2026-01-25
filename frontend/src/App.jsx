@@ -19,7 +19,7 @@ import CustomerPortal from './components/dashboard/CustomerPortal';
 import OwnerDashboard from './components/dashboard/OwnerDashboard';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee
+  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee, Calendar
 } from 'lucide-react';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
@@ -557,6 +557,8 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
   const [avgServiceMinutes, setAvgServiceMinutes] = useState('15');
   const [counterCount, setCounterCount] = useState('1');
   const [autoNoShow, setAutoNoShow] = useState(false);
+  const [workingDays, setWorkingDays] = useState({ Mon: true, Tue: true, Wed: true, Thu: true, Fri: true, Sat: true, Sun: false });
+  const [allowSunday, setAllowSunday] = useState(false);
 
   useEffect(() => {
     setRole(defaultRole);
@@ -582,7 +584,10 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
       const officeDetails = role === 'office_owner' ? {
         name: officeName, address, serviceType, openingTime, closingTime,
         dailyCapacity: parseInt(dailyCapacity), avgServiceMinutes: parseInt(avgServiceMinutes),
-        counterCount: parseInt(counterCount), autoNoShow
+        dailyCapacity: parseInt(dailyCapacity), avgServiceMinutes: parseInt(avgServiceMinutes),
+        counterCount: parseInt(counterCount), autoNoShow,
+        working_days: Object.keys(workingDays).filter(d => workingDays[d]).join(','),
+        allow_sunday: allowSunday ? 1 : 0
       } : null;
 
       await register(name, email, password, phone, role, role === 'admin' ? adminKey : undefined, dob, gender, officeDetails);
@@ -697,6 +702,32 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.9rem' }}>
               <input type="checkbox" checked={autoNoShow} onChange={e => setAutoNoShow(e.target.checked)} style={{ width: 'auto' }} />
               <span>Enable Auto No-Show (5m grace)</span>
+            </div>
+
+            <div style={{ padding: '8px 0', borderTop: '1px solid #e5e7eb', marginTop: '8px' }}>
+              <div style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '8px' }}>Working Days</div>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                  <label key={day} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.8rem', cursor: 'pointer', background: 'white', padding: '4px 8px', borderRadius: '4px', border: '1px solid #d1d5db' }}>
+                    <input
+                      type="checkbox"
+                      checked={workingDays[day]}
+                      onChange={e => setWorkingDays({ ...workingDays, [day]: e.target.checked })}
+                      style={{ width: 'auto' }}
+                    />
+                    {day}
+                  </label>
+                ))}
+              </div>
+              <div style={{ marginTop: '8px' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600, color: allowSunday ? 'var(--primary)' : 'inherit' }}>
+                  <input type="checkbox" checked={allowSunday} onChange={e => {
+                    setAllowSunday(e.target.checked);
+                    setWorkingDays(prev => ({ ...prev, Sun: e.target.checked }));
+                  }} style={{ width: 'auto' }} />
+                  Allow Sunday Operations
+                </label>
+              </div>
             </div>
           </div>
         )}
@@ -1750,7 +1781,7 @@ const SettingsView = ({ user, onBack, adminKey, selectedOfficeId }) => {
     try {
       await fetchJSON(`/api/offices/${selectedOfficeId}/timings`, {
         method: 'PUT',
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }, // Ensure auth
+        headers: { Authorization: `Bearer ${sessionStorage.getItem('token')}` }, // Ensure auth
         body: JSON.stringify(timingsForm)
       });
       setMessage('Office timings updated.');
@@ -2504,7 +2535,16 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
   const generalQueue = allTokens.filter(t => t.status === 'WAIT' && !t.assigned_counter);
   const completedCount = allTokens.filter(t => t.assigned_counter === myCounter && ['COMPLETED'].includes(t.status)).length;
   const noShowCount = allTokens.filter(t => t.assigned_counter === myCounter && ['no-show'].includes(t.status)).length;
-  const futureBookings = allTokens.filter(t => t.status === 'booked');
+  const futureBookings = allTokens.filter(t => t.status === 'FUTURE');
+
+  // Closed Check
+  const todayDate = new Date();
+  const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][todayDate.getDay()];
+  const workingDays = (office?.working_days || 'Mon,Tue,Wed,Thu,Fri,Sat').split(',').map(d => d.trim());
+
+  const isClosedToday = dayName === 'Sun'
+    ? !office?.allow_sunday
+    : !workingDays.includes(dayName);
 
   // Animation variants
   const containerVariants = {
@@ -2536,7 +2576,7 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
         />
       </div>
 
-      {/* Header */}
+      {/* Header ... */}
       <motion.header
         className="bg-white border-b border-gray-200 sticky top-0 w-full z-50 shadow-sm"
         initial={{ y: -100 }}
@@ -2544,7 +2584,7 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
         transition={{ type: "spring", stiffness: 100 }}
       >
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          {/* Logo/Title */}
+          {/* ... Header Content (Keep existing) ... */}
           <div className="flex items-center gap-3">
             <div className={`p-2 rounded-lg ${isActive ? 'bg-purple-50' : 'bg-red-50'}`}>
               <User className={isActive ? 'text-purple-600' : 'text-red-600'} size={24} />
@@ -2557,7 +2597,6 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
             </div>
           </div>
 
-          {/* Right Actions */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <div className={`w-3 h-3 rounded-full animate-pulse ${isActive ? 'bg-purple-500' : 'bg-red-500'}`} />
@@ -2566,21 +2605,19 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
               </span>
             </div>
             <div className="h-8 w-px bg-gray-200" />
-            <motion.button
-              onClick={onLogout}
-              className="p-2 text-red-500 hover:bg-red-50 rounded-lg transition-colors border-none bg-transparent"
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.95 }}
-              title="Logout"
-            >
-              <LogOut size={20} />
-            </motion.button>
+            <motion.button onClick={onLogout} className="p-2 text-red-500 border-none bg-transparent"><LogOut size={20} /></motion.button>
           </div>
         </div>
       </motion.header>
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-12 relative z-10">
+        {isClosedToday && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6" role="alert">
+            <strong className="font-bold">Office Closed!</strong>
+            <span className="block sm:inline"> The office is closed today ({dayName}). Operations are restricted.</span>
+          </div>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* LEFT COLUMN: Main Counter Display */}
           <div className="lg:col-span-2 space-y-6">
@@ -2814,11 +2851,11 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
                           initial={{ opacity: 0 }}
                           animate={{ opacity: 1 }}
                         >
-                          <div className="flex items-center justify-between">
-                            <div className="font-bold text-gray-700 text-lg">#{t.token_number}</div>
-                            <div className="text-xs text-gray-500">{t.service_type || 'General'}</div>
+                          <div className="flex justify-between items-center">
+                            <span className="font-bold text-gray-700">#{t.token_number}</span>
+                            <span className="text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600">General</span>
                           </div>
-                          <div className="text-sm font-medium text-gray-600 mt-1">{t.user_name}</div>
+                          <div className="text-sm text-gray-600 mt-1 truncate">{t.user_name}</div>
                           <div className="flex items-center gap-2 text-xs text-gray-400 mt-2">
                             <Clock size={12} />
                             {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait
@@ -2831,17 +2868,17 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
               </div>
             </motion.div>
 
-            {/* Future Bookings */}
+            {/* Future Queue Card */}
             <motion.div
               className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
               variants={itemVariants}
             >
-              <div className="bg-blue-50 px-6 py-4 border-b border-gray-200 flex items-center justify-between">
-                <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
-                  <Clock size={20} className="text-blue-600" />
+              <div className="bg-indigo-50 px-6 py-4 border-b border-indigo-200 flex items-center justify-between">
+                <h3 className="text-lg font-bold text-indigo-900 flex items-center gap-2">
+                  <Calendar size={20} className="text-indigo-600" />
                   Future Bookings
                 </h3>
-                <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-bold">
+                <span className="px-3 py-1 bg-indigo-100 text-indigo-700 rounded-full text-sm font-bold">
                   {futureBookings.length}
                 </span>
               </div>
@@ -2849,39 +2886,36 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
               <div className="max-h-[300px] overflow-y-auto">
                 {futureBookings.length === 0 ? (
                   <div className="p-8 text-center">
-                    <Clock className="text-gray-300 mx-auto mb-2" size={24} />
+                    <Calendar className="text-gray-300 mx-auto mb-2" size={24} />
                     <p className="text-sm text-gray-400">No future bookings</p>
                   </div>
                 ) : (
-                  <div className="divide-y divide-gray-100">
+                  <div className="divide-y divide-gray-100 bg-indigo-50/10">
                     {futureBookings.map((t) => (
                       <motion.div
                         key={t.id}
-                        className="p-4 hover:bg-gray-50 transition-colors opacity-75"
+                        className="p-4 hover:bg-indigo-50 transition-colors"
                         initial={{ opacity: 0 }}
-                        animate={{ opacity: 0.75 }}
-                        transition={{ duration: 0.3 }}
+                        animate={{ opacity: 1 }}
                       >
-                        <div className="flex items-center justify-between mb-1">
-                          <div className="font-bold text-gray-700">#{t.token_number}</div>
-                          <div className="text-xs text-gray-500">
-                            {t.expected_arrival_time
-                              ? new Date(t.expected_arrival_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                              : 'Anytime'}
-                          </div>
+                        <div className="flex justify-between items-center mb-1">
+                          <span className="font-bold text-gray-700">#{t.token_number}</span>
+                          <span className="text-xs bg-indigo-100 px-2 py-0.5 rounded text-indigo-600 font-medium">
+                            {new Date(t.appointment_date).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                          </span>
                         </div>
-                        <div className="text-sm text-gray-600">{t.user_name}</div>
-                        <div className="text-xs text-gray-500 mt-1">{t.service_type || 'General'}</div>
+                        <div className="text-sm text-gray-600 truncate">{t.user_name}</div>
                       </motion.div>
                     ))}
                   </div>
-                )}
-              </div>
-            </motion.div>
-          </div>
-        </div>
-      </main>
-    </div>
+                )
+                }
+              </div >
+            </motion.div >
+          </div >
+        </div >
+      </main >
+    </div >
   );
 }
 
@@ -3249,7 +3283,9 @@ function App() {
           lng: formData.userLng,
           note: formData.note,
           customerAddress: formData.customerAddress,
-          travelTime: formData.travelTime
+          customerAddress: formData.customerAddress,
+          travelTime: formData.travelTime,
+          appointmentDate: formData.appointmentDate // Fixed: Pass appointment date
         }),
       });
       setMessage('Booking successful!');

@@ -15,6 +15,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
     const [selectedOffice, setSelectedOffice] = useState(office?.id);
     const [showBookingModal, setShowBookingModal] = useState(false);
     const [currentStep, setCurrentStep] = useState(1);
+    const [appointmentDate, setAppointmentDate] = useState(new Date().toISOString().split('T')[0]);
     const [locationMode, setLocationMode] = useState('map');
 
     // Address Validation State
@@ -104,9 +105,14 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         }
     }, [user]);
 
-    const myTokens = useMemo(() => {
+    const activeTokens = useMemo(() => {
         if (!user || !tokens) return [];
         return tokens.filter(t => (t.user_id === user.id) && ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
+    }, [user, tokens]);
+
+    const futureTokens = useMemo(() => {
+        if (!user || !tokens) return [];
+        return tokens.filter(t => (t.user_id === user.id) && t.status === 'FUTURE');
     }, [user, tokens]);
 
     // Process real data
@@ -141,7 +147,29 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
 
     // Handlers
     const handleNextStep = () => {
-        if (currentStep < 3) setCurrentStep(currentStep + 1);
+        if (currentStep === 2) {
+            // Validate Date
+            if (!appointmentDate) return alert('Please select a date');
+            if (appointmentDate < new Date().toISOString().split('T')[0]) return alert('Cannot book in past');
+
+            // Check Closed Days
+            const dateObj = new Date(appointmentDate);
+            const dayName = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dateObj.getDay()];
+            const workingDays = (currentOffice?.working_days || 'Mon,Tue,Wed,Thu,Fri,Sat').split(',').map(d => d.trim());
+
+            let isClosed = false;
+            if (dayName === 'Sun') {
+                isClosed = !currentOffice?.allow_sunday;
+            } else {
+                isClosed = !workingDays.includes(dayName);
+            }
+
+            if (isClosed) return alert(`Office is closed on ${dayName}. Please choose another date.`);
+        }
+        if (currentStep === 3) {
+            if (!formData.service) return alert('Please select a service');
+        }
+        if (currentStep < 4) setCurrentStep(currentStep + 1);
     };
 
     const handlePrevStep = () => {
@@ -153,6 +181,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
             customerName: formData.fullName,
             customerEmail: formData.email,
             customerContact: formData.phone,
+            appointmentDate,
             serviceType: formData.service,
             // Match backend expectation: it looks for 'lat', 'lng', 'customerAddress'
             // The handleBookingSubmit in App.jsx maps userLat/userLng to body lat/lng.
@@ -182,7 +211,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         : locations;
 
     useEffect(() => {
-        if (showBookingModal && currentStep === 3 && mapContainer.current && !map.current) {
+        if (showBookingModal && currentStep === 4 && mapContainer.current && !map.current) {
             // Default center: current office loc or generic Bangalore coords
             const defaultCenter = [77.5946, 12.9716];
 
@@ -241,7 +270,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
     }, [showBookingModal, currentStep]);
 
     useEffect(() => {
-        if (!showBookingModal || currentStep !== 3) {
+        if (!showBookingModal || currentStep !== 4) {
             if (map.current) {
                 map.current.remove();
                 map.current = null;
@@ -515,9 +544,9 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                         {/* Recent Bookings */}
                         <div>
                             <h3 className="text-lg font-bold text-slate-800 mb-4 px-1">Your Active Tickets</h3>
-                            {myTokens.length > 0 ? (
+                            {activeTokens.length > 0 ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {myTokens.map((token) => (
+                                    {activeTokens.map((token) => (
                                         <div key={token.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:border-blue-200 transition-colors group relative overflow-hidden">
                                             {/* Status Badge */}
                                             <div className="flex justify-between items-start mb-3">
@@ -587,6 +616,44 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                 </div>
                             )}
                         </div>
+
+                        {/* Future Bookings Section */}
+                        {futureTokens.length > 0 && (
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-800 mb-4 px-1 flex items-center gap-2">
+                                    <Calendar className="text-blue-600" size={20} />
+                                    Upcoming Appointments
+                                </h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    {futureTokens.map((token) => (
+                                        <div key={token.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:border-indigo-200 transition-colors group relative overflow-hidden">
+                                            <div className="flex justify-between items-start mb-3">
+                                                <div className="flex flex-col">
+                                                    <span className="font-bold text-slate-800 text-lg">#{token.token_number}</span>
+                                                    <span className="text-xs text-slate-500 font-medium">{token.service_type || 'General Service'}</span>
+                                                </div>
+                                                <span className="px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border bg-indigo-50 text-indigo-700 border-indigo-100">
+                                                    Scheduled
+                                                </span>
+                                            </div>
+
+                                            <div className="space-y-2 mb-2">
+                                                <div className="flex items-center gap-2 text-sm text-slate-600">
+                                                    <Calendar size={14} className="text-indigo-400" />
+                                                    <span className="font-medium">
+                                                        {new Date(token.appointment_date).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+                                                    </span>
+                                                </div>
+                                                <div className="flex items-center gap-2 text-xs text-slate-500">
+                                                    <MapPin size={14} className="text-slate-400" />
+                                                    <span>{currentOffice?.name || 'Office'}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
             </main>
@@ -610,7 +677,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                             <div className="bg-slate-50 px-8 py-6 flex items-center justify-between border-b border-slate-100">
                                 <div>
                                     <h3 className="text-xl font-bold text-slate-800">Book Appointment</h3>
-                                    <p className="text-slate-500 text-xs font-medium mt-1 uppercase tracking-wider">Step {currentStep} of 3</p>
+                                    <p className="text-slate-500 text-xs font-medium mt-1 uppercase tracking-wider">Step {currentStep} of 4</p>
                                 </div>
                                 <button onClick={closeModal} className="!p-2 hover:!bg-slate-200 !bg-transparent !rounded-full transition-colors !text-slate-500">
                                     <X size={20} />
@@ -622,7 +689,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                 <motion.div
                                     className="h-full bg-blue-600"
                                     initial={{ width: '0%' }}
-                                    animate={{ width: `${(currentStep / 3) * 100}%` }}
+                                    animate={{ width: `${(currentStep / 4) * 100}%` }}
                                 />
                             </div>
 
@@ -663,9 +730,27 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                         </motion.div>
                                     )}
 
-                                    {/* STEP 2: SERVICE */}
+                                    {/* STEP 2: DATE */}
                                     {currentStep === 2 && (
-                                        <motion.div key="step2" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-3">
+                                        <motion.div key="step2-date" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
+                                            <h4 className="text-lg font-bold text-slate-800 mb-2">Select Date</h4>
+                                            <input
+                                                type="date"
+                                                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all font-medium text-slate-800"
+                                                value={appointmentDate}
+                                                min={new Date().toISOString().split('T')[0]}
+                                                onChange={(e) => setAppointmentDate(e.target.value)}
+                                            />
+                                            <p className="text-xs text-slate-500">
+                                                Working Days: {currentOffice?.working_days || 'Mon-Sat'}
+                                                {currentOffice?.allow_sunday ? ', Sun' : ''}
+                                            </p>
+                                        </motion.div>
+                                    )}
+
+                                    {/* STEP 3: SERVICE */}
+                                    {currentStep === 3 && (
+                                        <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-3">
                                             <h4 className="text-lg font-bold text-slate-800 mb-4">Select Service</h4>
                                             {services.map((service) => (
                                                 <button
@@ -690,9 +775,9 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                         </motion.div>
                                     )}
 
-                                    {/* STEP 3: USER LOCATION */}
-                                    {currentStep === 3 && (
-                                        <motion.div key="step3" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
+                                    {/* STEP 4: USER LOCATION */}
+                                    {currentStep === 4 && (
+                                        <motion.div key="step4" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
                                             <div className="flex items-center justify-between">
                                                 <h4 className="text-lg font-bold text-slate-800">Where are you coming from?</h4>
                                                 <button
@@ -818,10 +903,10 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                     Back
                                 </button>
                                 <button
-                                    onClick={currentStep === 3 ? handleConfirmBooking : handleNextStep}
+                                    onClick={currentStep === 4 ? handleConfirmBooking : handleNextStep}
                                     className="!px-8 !py-2.5 !bg-gradient-to-r !from-blue-600 !to-indigo-600 !text-white !rounded-xl !font-bold !text-sm hover:!shadow-lg hover:!scale-105 transition-all active:!scale-95 flex items-center gap-2"
                                 >
-                                    {currentStep === 3 ? 'Confirm Booking' : 'Next Step'}
+                                    {currentStep === 4 ? 'Confirm Booking' : 'Next Step'}
                                     {currentStep !== 3 && <ChevronRight size={16} />}
                                 </button>
                             </div>

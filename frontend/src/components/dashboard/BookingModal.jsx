@@ -19,6 +19,8 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
     const mapContainer = useRef(null);
     const map = useRef(null);
 
+    const [appointmentDate, setAppointmentDate] = useState(new Date().toISOString().split('T')[0]);
+
     // Reset state when modal opens
     useEffect(() => {
         if (isOpen) {
@@ -29,7 +31,7 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
                 phone: user?.phone || ''
             });
             setSelectedLocation(office?.id);
-            // Default to first service if available? No, let user select.
+            setAppointmentDate(new Date().toISOString().split('T')[0]);
         }
     }, [isOpen, user, office]);
 
@@ -66,9 +68,6 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
 
         // Cleanup map on unmount or mode switch
         return () => {
-            // We don't verify destroy here to avoid re-initializing issues in fast toggles, 
-            // but for production app we might want strict cleanup. 
-            // For now, let's clear ref if we unmount.
         };
     }, [isOpen, step, locationMode, availableOffices]);
 
@@ -83,6 +82,11 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
     const handleNext = () => {
         if (step === 'details') {
             if (!formData.name || !formData.email) return alert('Name and Email are required');
+            setStep('date');
+        } else if (step === 'date') {
+            if (!appointmentDate) return alert('Please select a date');
+            // Basic Check: Ensure not in past
+            if (appointmentDate < new Date().toISOString().split('T')[0]) return alert('Cannot book in past');
             setStep('service');
         } else if (step === 'service') {
             if (!selectedService) return alert('Please select a service');
@@ -95,7 +99,8 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
 
     const handleBack = () => {
         if (step === 'location') setStep('service');
-        else if (step === 'service') setStep('details');
+        else if (step === 'service') setStep('date');
+        else if (step === 'date') setStep('details');
     };
 
     const handleSubmit = () => {
@@ -105,7 +110,8 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
             customerContact: formData.phone,
             serviceType: selectedService,
             locationId: selectedLocation,
-            note: 'Booked via Modal'
+            note: 'Booked via Modal',
+            appointmentDate
         });
         onClose();
     };
@@ -128,7 +134,7 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
                 <div className="p-6 border-b border-gray-100 flex items-center justify-between bg-white shrink-0">
                     <div>
                         <h2 className="text-xl font-bold text-gray-900">Book Appointment</h2>
-                        <p className="text-sm text-gray-500">Step {step === 'details' ? '1' : step === 'service' ? '2' : '3'} of 3</p>
+                        <p className="text-sm text-gray-500">Step {step === 'details' ? '1' : step === 'date' ? '2' : step === 'service' ? '3' : '4'} of 4</p>
                     </div>
                     <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500">
                         <X size={20} />
@@ -139,7 +145,7 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
                 <div className="h-1 bg-gray-100 w-full shrink-0">
                     <div
                         className="h-full bg-blue-600 transition-all duration-300 ease-out"
-                        style={{ width: step === 'details' ? '33%' : step === 'service' ? '66%' : '100%' }}
+                        style={{ width: step === 'details' ? '25%' : step === 'date' ? '50%' : step === 'service' ? '75%' : '100%' }}
                     />
                 </div>
 
@@ -185,6 +191,32 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
                             </motion.div>
                         )}
 
+                        {step === 'date' && (
+                            <motion.div
+                                key="date"
+                                initial={{ opacity: 0, x: 20 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                exit={{ opacity: 0, x: -20 }}
+                                className="space-y-6"
+                            >
+                                <h3 className="text-lg font-bold text-gray-900">Select Date</h3>
+                                <div className="flex flex-col gap-4">
+                                    <label className="block text-sm font-bold text-gray-700">Appointment Date</label>
+                                    <input
+                                        type="date"
+                                        value={appointmentDate}
+                                        onChange={e => setAppointmentDate(e.target.value)}
+                                        min={new Date().toISOString().split('T')[0]}
+                                        className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none font-medium text-lg"
+                                    />
+                                    <p className="text-sm text-gray-500">
+                                        Select a date. We will reserve your spot in the queue for that day.
+                                        Note: The office may be closed on holidays.
+                                    </p>
+                                </div>
+                            </motion.div>
+                        )}
+
                         {step === 'service' && (
                             <motion.div
                                 key="service"
@@ -200,8 +232,8 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
                                             key={s.id}
                                             onClick={() => setSelectedService(s.id)}
                                             className={`p-5 rounded-xl border-2 text-left transition-all flex items-center justify-between ${selectedService === s.id
-                                                    ? 'border-blue-600 bg-blue-50'
-                                                    : 'border-gray-200 hover:border-gray-300'
+                                                ? 'border-blue-600 bg-blue-50'
+                                                : 'border-gray-200 hover:border-gray-300'
                                                 }`}
                                         >
                                             <span className="font-bold text-gray-900">{s.name}</span>
@@ -255,8 +287,8 @@ export default function BookingModal({ isOpen, onClose, onSubmit, office, availa
                                                 key={off.id}
                                                 onClick={() => setSelectedLocation(off.id)}
                                                 className={`w-full p-4 rounded-xl border-2 text-left transition-all group ${selectedLocation === off.id
-                                                        ? 'border-blue-600 bg-blue-50'
-                                                        : 'border-gray-200 hover:border-blue-200'
+                                                    ? 'border-blue-600 bg-blue-50'
+                                                    : 'border-gray-200 hover:border-blue-200'
                                                     }`}
                                             >
                                                 <div className="font-bold text-gray-900 mb-1 flex items-center justify-between">

@@ -45,7 +45,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         }
 
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/active-counters`, {
                 method: 'POST',
                 headers: {
@@ -99,7 +99,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         if (!confirmed) return;
 
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/shutdown`, {
                 method: 'POST',
                 headers: {
@@ -123,9 +123,14 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
     };
 
     const [realStaff, setRealStaff] = useState([]);
-    const [timings, setTimings] = useState({ opening_time: '09:00', closing_time: '17:00' });
+    const [timings, setTimings] = useState({
+        opening_time: '09:00', closing_time: '17:00',
+        working_days: 'Mon,Tue,Wed,Thu,Fri,Sat', allow_sunday: false, daily_capacity: 100
+    });
     const [editStaffMode, setEditStaffMode] = useState(null); // null or staff object
-    const [newStaffData, setNewStaffData] = useState({ name: '', email: '', counter: 1 });
+    const [newStaffData, setNewStaffData] = useState({ name: '', email: '', password: '', counter: 1 });
+    const [holidays, setHolidays] = useState([]);
+    const [newHoliday, setNewHoliday] = useState({ date: '', reason: '' });
 
     const socketRef = useRef(null);
 
@@ -134,9 +139,13 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             setCapacity(activeOffice.active_counters || 1);
             setTimings({
                 opening_time: activeOffice.opening_time || '09:00',
-                closing_time: activeOffice.closing_time || '17:00'
+                closing_time: activeOffice.closing_time || '17:00',
+                working_days: activeOffice.working_days || 'Mon,Tue,Wed,Thu,Fri,Sat',
+                allow_sunday: activeOffice.allow_sunday === 1,
+                daily_capacity: activeOffice.daily_capacity || 100
             });
             fetchStaff();
+            fetchHolidays();
 
             // Connect Socket
             const socket = io('http://localhost:4000');
@@ -156,10 +165,51 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         }
     }, [activeOffice]);
 
+    const fetchHolidays = async () => {
+        if (!activeOffice) return;
+        try {
+            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/holidays`);
+            const data = await res.json();
+            if (Array.isArray(data)) setHolidays(data);
+        } catch (e) { console.error(e); }
+    };
+
+    const handleAddHoliday = async () => {
+        if (!newHoliday.date) return alert('Date is required');
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/holidays`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify(newHoliday)
+            });
+            if (res.ok) {
+                setNewHoliday({ date: '', reason: '' });
+                fetchHolidays();
+                alert('Holiday Added');
+            } else {
+                const d = await res.json();
+                alert('Error: ' + d.error);
+            }
+        } catch (e) { alert(e.message); }
+    };
+
+    const handleDeleteHoliday = async (id) => {
+        if (!window.confirm('Delete this holiday?')) return;
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/holidays/${id}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) fetchHolidays();
+        } catch (e) { alert(e.message); }
+    };
+
     const fetchStaff = async () => {
         if (!activeOffice) return;
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/staff`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -174,7 +224,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
     const handleDeleteStaff = async (staffId) => {
         if (!window.confirm("PERMANENT DELETE: This will remove the staff member and their login credentials forever. Are you sure?")) return;
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/staff/${staffId}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
@@ -193,7 +243,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         if (!activeOffice) return;
 
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             let res;
 
             if (editStaffMode) {
@@ -218,7 +268,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                 alert(editStaffMode ? 'Staff Updated' : 'Staff Added Successfully');
                 setShowAddStaffModal(false);
                 setEditStaffMode(null);
-                setNewStaffData({ name: '', email: '', counter: 1 });
+                setNewStaffData({ name: '', email: '', password: '', counter: 1 });
                 fetchStaff();
             } else {
                 alert(data.error || 'Operation failed');
@@ -231,7 +281,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
 
     const handleUpdateTimings = async () => {
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             if (!token) {
                 alert('Session Expired. Please log in again.');
                 if (onLogout) onLogout();
@@ -245,9 +295,9 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
 
             const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/timings`, {
                 method: 'PUT',
-                headers: { 
-                    'Content-Type': 'application/json', 
-                    'Authorization': `Bearer ${token}` 
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
                 },
                 body: JSON.stringify(timings)
             });
@@ -283,16 +333,16 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                 const errorMsg = (data?.error || 'Access denied').toLowerCase();
                 console.error('403 Forbidden - Error:', errorMsg);
                 console.error('Full data:', data);
-                
+
                 // Check if it's an auth issue - these are keywords that indicate token/auth problems
-                const isAuthError = 
-                    errorMsg.includes('token') || 
+                const isAuthError =
+                    errorMsg.includes('token') ||
                     errorMsg.includes('unauthorized') ||
                     errorMsg.includes('no token') ||
                     errorMsg.includes('invalid token') ||
                     errorMsg.includes('expired') ||
                     errorMsg.includes('authentication');
-                
+
                 if (isAuthError) {
                     console.error('Auth error detected - logging out');
                     alert('Session Expired. Please log in again.');
@@ -625,7 +675,6 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                                                         <motion.button
                                                             onClick={() => {
                                                                 setEditStaffMode(staff);
-                                                                setNewStaffData({ name: staff.name, email: staff.email, counter: staff.assigned_counter });
                                                                 setShowAddStaffModal(true);
                                                             }}
                                                             className="p-2 !bg-transparent hover:!bg-green-100 rounded-lg transition-colors shadow-none border-none"
@@ -654,69 +703,130 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
 
                     {/* Office Controls Tab */}
                     {activeTab === 'analytics' && (
-                        <motion.div
-                            className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm"
-                            variants={itemVariants}
-                            whileHover={{ y: -5 }}
-                        >
-                            <h3 className="text-2xl font-bold text-gray-900 mb-6">Office Controls</h3>
-                            <div className="grid md:grid-cols-2 gap-6">
-                                <motion.div
-                                    className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-xl"
-                                    whileHover={{ y: -5 }}
-                                >
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h4 className="font-bold text-gray-900">Operating Hours</h4>
-                                        <Clock size={24} className="text-green-600" />
+                        <div className="space-y-6">
+                            <motion.div
+                                className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm"
+                                variants={itemVariants}
+                                whileHover={{ y: -5 }}
+                            >
+                                <h3 className="text-2xl font-bold text-gray-900 mb-6">General Settings</h3>
+                                <div className="grid md:grid-cols-2 gap-6">
+                                    {/* Timing & Days */}
+                                    <div className="space-y-4">
+                                        <div>
+                                            <h4 className="font-bold text-gray-900 mb-2">Operating Hours</h4>
+                                            <div className="flex gap-2">
+                                                <input type="time" value={timings.opening_time} onChange={(e) => setTimings({ ...timings, opening_time: e.target.value })} className="w-full px-3 py-2 border rounded-lg" />
+                                                <span className="self-center">-</span>
+                                                <input type="time" value={timings.closing_time} onChange={(e) => setTimings({ ...timings, closing_time: e.target.value })} className="w-full px-3 py-2 border rounded-lg" />
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-gray-900 mb-2">Working Days</h4>
+                                            <div className="flex flex-wrap gap-2">
+                                                {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
+                                                    <label key={d} className="flex items-center gap-1 px-3 py-1 bg-gray-50 border rounded-lg cursor-pointer hover:bg-green-50">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={(timings.working_days || '').includes(d)}
+                                                            onChange={e => {
+                                                                const days = (timings.working_days || '').split(',').filter(x => x).map(s => s.trim());
+                                                                if (e.target.checked) days.push(d);
+                                                                else {
+                                                                    const idx = days.indexOf(d);
+                                                                    if (idx > -1) days.splice(idx, 1);
+                                                                }
+                                                                setTimings({ ...timings, working_days: days.join(',') });
+                                                            }}
+                                                        />
+                                                        <span className="text-sm">{d}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
                                     </div>
-                                    <div className="flex gap-2 mb-2">
-                                        <input
-                                            type="time"
-                                            value={timings.opening_time}
-                                            onChange={(e) => setTimings({ ...timings, opening_time: e.target.value })}
-                                            className="w-full px-2 py-2 border border-green-300 rounded-lg focus:border-green-500 outline-none"
-                                        />
-                                        <span className="self-center">-</span>
-                                        <input
-                                            type="time"
-                                            value={timings.closing_time}
-                                            onChange={(e) => setTimings({ ...timings, closing_time: e.target.value })}
-                                            className="w-full px-2 py-2 border border-green-300 rounded-lg focus:border-green-500 outline-none"
-                                        />
-                                    </div>
-                                    <motion.button
-                                        onClick={handleUpdateTimings}
-                                        className="w-full py-2 !bg-green-600 !text-white rounded-lg font-semibold hover:!bg-green-700 transition-all border-none"
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
-                                    >
-                                        Update Hours
-                                    </motion.button>
-                                </motion.div>
 
-                                <motion.div
-                                    className="p-6 bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 rounded-xl"
-                                    whileHover={{ y: -5 }}
-                                >
-                                    <div className="flex items-center justify-between mb-4">
-                                        <h4 className="font-bold text-gray-900">Max Daily Capacity</h4>
-                                        <TrendingUp size={24} className="text-green-600" />
+                                    {/* Capacity & Sunday */}
+                                    <div className="space-y-4">
+                                        <div>
+                                            <h4 className="font-bold text-gray-900 mb-2">Daily Capacity</h4>
+                                            <input
+                                                type="number"
+                                                value={timings.daily_capacity}
+                                                onChange={e => setTimings({ ...timings, daily_capacity: parseInt(e.target.value) })}
+                                                className="w-full px-3 py-2 border rounded-lg"
+                                            />
+                                        </div>
+                                        <div>
+                                            <h4 className="font-bold text-gray-900 mb-2">Sunday Operations</h4>
+                                            <label className="flex items-center gap-2 px-3 py-2 bg-gray-50 border rounded-lg cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={timings.allow_sunday}
+                                                    onChange={e => setTimings({ ...timings, allow_sunday: e.target.checked })}
+                                                />
+                                                <span>Allow Open on Sundays</span>
+                                            </label>
+                                        </div>
                                     </div>
-                                    <input
-                                        type="number"
-                                        defaultValue="100"
-                                        className="w-full px-4 py-2 border border-green-300 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none mb-2"
-                                    />
-                                    <motion.button
-                                        className="w-full py-2 !bg-green-600 !text-white rounded-lg font-semibold hover:!bg-green-700 transition-all border-none"
-                                        whileHover={{ scale: 1.02 }}
-                                        whileTap={{ scale: 0.98 }}
-                                    >
-                                        Update Capacity
-                                    </motion.button>
-                                </motion.div>
-                            </div>
-                        </motion.div>
+                                </div>
+                                <div className="mt-6">
+                                    <button onClick={handleUpdateTimings} className="w-full py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors">
+                                        Save All Settings
+                                    </button>
+                                </div>
+                            </motion.div>
+
+                            {/* Holidays Manager */}
+                            <motion.div
+                                className="bg-white rounded-2xl border border-gray-200 p-8 shadow-sm"
+                                variants={itemVariants}
+                                whileHover={{ y: -5 }}
+                            >
+                                <h3 className="text-2xl font-bold text-gray-900 mb-6 flex items-center gap-2">
+                                    <Clock size={24} className="text-red-500" />
+                                    Holiday Manager
+                                </h3>
+
+                                <div className="mb-6 flex gap-4 items-end">
+                                    <div className="flex-1">
+                                        <label className="block text-sm font-bold text-gray-700 mb-1">Date</label>
+                                        <input type="date" value={newHoliday.date} onChange={e => setNewHoliday({ ...newHoliday, date: e.target.value })} className="w-full px-3 py-2 border rounded-lg" />
+                                    </div>
+                                    <div className="flex-1">
+                                        <label className="block text-sm font-bold text-gray-700 mb-1">Reason</label>
+                                        <input type="text" value={newHoliday.reason} onChange={e => setNewHoliday({ ...newHoliday, reason: e.target.value })} className="w-full px-3 py-2 border rounded-lg" placeholder="e.g. Festival" />
+                                    </div>
+                                    <button onClick={handleAddHoliday} className="px-6 py-2 bg-green-600 text-white rounded-lg font-bold h-[42px]">Add</button>
+                                </div>
+
+                                <div className="border rounded-lg overflow-hidden">
+                                    <table className="w-full">
+                                        <thead className="bg-gray-50 border-b">
+                                            <tr>
+                                                <th className="text-left py-3 px-4 font-bold text-gray-600">Date</th>
+                                                <th className="text-left py-3 px-4 font-bold text-gray-600">Reason</th>
+                                                <th className="text-right py-3 px-4 font-bold text-gray-600">Action</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {holidays.length === 0 && (
+                                                <tr><td colSpan="3" className="py-4 px-4 text-center text-gray-500">No holidays added.</td></tr>
+                                            )}
+                                            {holidays.map(h => (
+                                                <tr key={h.id} className="border-b last:border-0 hover:bg-gray-50">
+                                                    <td className="py-3 px-4">{h.date}</td>
+                                                    <td className="py-3 px-4">{h.reason}</td>
+                                                    <td className="py-3 px-4 text-right">
+                                                        <button onClick={() => handleDeleteHoliday(h.id)} className="text-red-500 hover:text-red-700">Delete</button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </motion.div>
+                        </div>
                     )}
 
                     {/* Analytics Tab */}
@@ -855,6 +965,15 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                                     onChange={(e) => setNewStaffData({ ...newStaffData, email: e.target.value })}
                                     className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none"
                                 />
+                                {!editStaffMode && (
+                                    <input
+                                        type="password"
+                                        placeholder="Set Password"
+                                        value={newStaffData.password}
+                                        onChange={(e) => setNewStaffData({ ...newStaffData, password: e.target.value })}
+                                        className="w-full px-4 py-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none"
+                                    />
+                                )}
                                 <select
                                     value={newStaffData.counter}
                                     onChange={(e) => setNewStaffData({ ...newStaffData, counter: e.target.value })}
