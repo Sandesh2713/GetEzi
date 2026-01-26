@@ -293,13 +293,17 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             console.log('User:', user);
             console.log('Timings data:', timings);
 
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/timings`, {
-                method: 'PUT',
+            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/config`, {
+                method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
-                body: JSON.stringify(timings)
+                body: JSON.stringify({
+                    workingDays: timings.working_days,
+                    allowSunday: timings.allow_sunday,
+                    dailyCapacity: timings.daily_capacity
+                })
             });
 
             console.log('Response status:', res.status);

@@ -11,6 +11,14 @@
 
 <body>
   <div id="root"></div>
+  <script>
+    window.onerror = function (message, source, lineno, colno, error) {
+      document.body.innerHTML = '<div style="color:red; font-weight:bold; padding:20px; border:2px solid red; z-index:9999; position:fixed; top:0; left:0; width:100%; background:white; overflow:auto;"><h1>Startup Error!</h1><pre>' + message + '\n' + source + ':' + lineno + '</pre></div>';
+    };
+    window.onunhandledrejection = function(event) {
+        document.body.innerHTML = '<div style="color:red; font-weight:bold; padding:20px; border:2px solid red; z-index:9999; position:fixed; top:0; left:0; width:100%; background:white; overflow:auto;"><h1>Unhandled Promise Rejection!</h1><pre>' + event.reason + '</pre></div>';
+    };
+  </script>
   <script type="module" src="/src/main.jsx"></script>
 </body>
 

@@ -8,6 +8,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 
 import CustomerProfile from './CustomerProfile';
 import CustomerPreferences from './CustomerPreferences';
+import { SmartCalendar } from '../ui/SmartCalendar';
 
 import { useMemo } from 'react';
 
@@ -119,8 +120,38 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
     const currentOffice = availableOffices.find(o => o.id === selectedOffice) || office || {};
 
     // Calculate stats
+    // Calculate Active Bookings for Today (to subtract from Capacity)
+    const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    const todayBookingsCount = (tokens || []).filter(t => {
+        // Include only tokens for this office
+        if (t.office_id !== selectedOffice) return false;
+
+        // Exclude cancelled/no-show/hold (if hold consumes slot? usually yes, but let's stick to active)
+        if (['cancelled', 'no-show'].includes(t.status)) return false;
+
+        // Date Logic
+        if (t.appointment_date) {
+            // Scheduled: Must match Today
+            return t.appointment_date === todayStr;
+        } else {
+            // Walk-in (No Date): Must be created TODAY
+            // If created yesterday and still waiting, it technically consumes a slot today, but usually we care about 'New Bookings' capacity.
+            // If we strictly want to reset "Daily Capacity" for "New Intakes", we should count how many slots are taken *for today*.
+            // A rollover token consumes a slot. So created_at check might be lenient for WAIT, but strict for COMPLETED.
+
+            // Fix: If COMPLETED/HISTORY, checks created_at. If WAIT, checks freshness?
+            // Simplest: Check if created_at is today.
+            const created = new Date(t.created_at);
+            return created >= todayStart;
+        }
+    }).length;
+
     const waitTime = currentOffice ? `${(currentOffice.queueCount || 0) * (currentOffice.avg_service_minutes || 10)} min` : '-';
-    const availableSlots = currentOffice ? Math.max(0, (currentOffice.daily_capacity || 50) - (currentOffice.queueCount || 0)) : '-';
+    // Open Slots = Capacity - Today's Valid Bookings
+    const availableSlots = currentOffice ? Math.max(0, (currentOffice.daily_capacity || 50) - todayBookingsCount) : '-';
 
     const services = currentOffice.service_type
         ? currentOffice.service_type.split(',').map((s, i) => ({ id: s.trim(), name: s.trim(), duration: `${currentOffice.avg_service_minutes || 15} mins` })).filter(s => s.name)
@@ -501,7 +532,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                 type="button"
                                 onClick={(e) => {
                                     e.preventDefault();
-                                    onRefresh();
+                                    window.location.reload();
                                 }}
                                 className="w-full flex items-center justify-center gap-2 !py-3 !bg-white !border-2 !border-slate-100 !text-slate-700 !rounded-xl hover:!border-blue-200 hover:!bg-blue-50 transition-all !font-bold !text-sm"
                             >
@@ -734,17 +765,11 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                     {currentStep === 2 && (
                                         <motion.div key="step2-date" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-4">
                                             <h4 className="text-lg font-bold text-slate-800 mb-2">Select Date</h4>
-                                            <input
-                                                type="date"
-                                                className="w-full px-4 py-3 bg-slate-50 border-2 border-slate-100 rounded-xl focus:border-blue-500 focus:bg-white outline-none transition-all font-medium text-slate-800"
-                                                value={appointmentDate}
-                                                min={new Date().toISOString().split('T')[0]}
-                                                onChange={(e) => setAppointmentDate(e.target.value)}
+                                            <SmartCalendar
+                                                officeId={selectedOffice}
+                                                selectedDate={appointmentDate}
+                                                onSelect={setAppointmentDate}
                                             />
-                                            <p className="text-xs text-slate-500">
-                                                Working Days: {currentOffice?.working_days || 'Mon-Sat'}
-                                                {currentOffice?.allow_sunday ? ', Sun' : ''}
-                                            </p>
                                         </motion.div>
                                     )}
 

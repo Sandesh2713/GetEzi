@@ -404,11 +404,12 @@ const activeStaffStmt = {
 };
 
 const officeHolidaysStmt = {
-  getByOffice: db.prepare(`SELECT * FROM office_holidays WHERE office_id = ? ORDER BY date ASC`),
-  insert: db.prepare(`INSERT INTO office_holidays (id, office_id, date, reason, type, created_at) VALUES (@id, @office_id, @date, @reason, @type, @created_at)`),
-  delete: db.prepare(`DELETE FROM office_holidays WHERE id = ? AND office_id = ?`),
-  checkDate: db.prepare(`SELECT * FROM office_holidays WHERE office_id = ? AND date = ?`)
+  checkDate: db.prepare(`SELECT id, reason FROM office_holidays WHERE office_id = ? AND date = ?`),
+  add: db.prepare(`INSERT OR IGNORE INTO office_holidays (id, office_id, date, reason, created_at) VALUES (@id, @office_id, @date, @reason, @created_at)`),
+  remove: db.prepare(`DELETE FROM office_holidays WHERE id = @id AND office_id = @office_id`),
+  list: db.prepare(`SELECT * FROM office_holidays WHERE office_id = ? ORDER BY date ASC`)
 };
+
 
 // --- STAFF LOGIC REMOVED (countersStmt, syncCounters, assignStaffRole, releaseStaff) ---
 // Now using Static Assignment in 'users' table.
@@ -848,7 +849,7 @@ app.get('/health', (req, res) => res.json({ status: 'ok', time: toIso() }));
 // --- Holiday Management ---
 app.get('/api/offices/:id/holidays', (req, res) => {
   try {
-    const holidays = officeHolidaysStmt.getByOffice.all(req.params.id);
+    const holidays = officeHolidaysStmt.list.all(req.params.id);
     res.json(holidays);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -860,7 +861,7 @@ app.post('/api/offices/:id/holidays', authenticateToken, requireOffice, requireR
     const { date, reason, type } = req.body;
     if (!date) return res.status(400).json({ error: 'Date is required' });
     const id = uuidv4();
-    officeHolidaysStmt.insert.run({
+    officeHolidaysStmt.add.run({
       id,
       office_id: req.params.id,
       date, // YYYY-MM-DD
@@ -876,7 +877,8 @@ app.post('/api/offices/:id/holidays', authenticateToken, requireOffice, requireR
 
 app.delete('/api/offices/:id/holidays/:holidayId', authenticateToken, requireOffice, requireRole(['office_owner', 'admin']), (req, res) => {
   try {
-    officeHolidaysStmt.delete.run(req.params.holidayId, req.params.id);
+    const { id, holidayId } = req.params;
+    officeHolidaysStmt.remove.run({ id: holidayId, office_id: id });
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1320,20 +1322,104 @@ app.post('/api/tokens/:id/arrive', authenticateToken, (req, res) => {
 
 // Admin: Config Counters
 // Admin: Config Counters
-app.post('/api/offices/:id/config', authenticateToken, (req, res) => {
+// Admin: Config Counters
+
+// --- CALENDAR API ---
+app.get('/api/offices/:id/calendar', (req, res) => {
   const { id } = req.params;
-  const { counterCount } = req.body;
-  const N = parseInt(counterCount);
+  const { month } = req.query; // YYYY-MM
 
-  if (isNaN(N) || N < 1) return res.status(400).json({ error: 'Invalid counter count' });
+  if (!month) return res.status(400).json({ error: 'Month parameter (YYYY-MM) required' });
 
-  db.transaction(() => {
-    officesStmt.updateConfig.run({
-      n: N,
-      m: N * 3,
-      id
-    });
-  })();
+  const office = ensureOffice(id);
+  const [year, m] = month.split('-').map(Number);
+
+  // Generate days in month
+  const daysInMonth = new Date(year, m, 0).getDate();
+  const calendar = []; // { date, status: AVAILABLE|BUSY|FULL|HOLIDAY|CLOSED_SUNDAY|CLOSED_WEEKDAY, booked, capacity }
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${year}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const dateObj = new Date(year, m - 1, d); // Local time construction to avoid UTC shifts
+    const dayOfWeek = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][dateObj.getDay()];
+
+    // 1. Check Holiday
+    const holiday = officeHolidaysStmt.checkDate.get(id, dateStr);
+    if (holiday) {
+      calendar.push({ date: dateStr, status: 'HOLIDAY', reason: holiday.reason });
+      continue;
+    }
+
+    // 2. Check Sunday / Working Day
+    const workingDays = (office.working_days || 'Mon,Tue,Wed,Thu,Fri,Sat').split(',').map(s => s.trim());
+    const isSunday = dateObj.getDay() === 0;
+
+    if (isSunday && !office.allow_sunday) {
+      calendar.push({ date: dateStr, status: 'CLOSED_SUNDAY' });
+      continue;
+    }
+    if (!isSunday && !workingDays.includes(dayOfWeek)) {
+      calendar.push({ date: dateStr, status: 'CLOSED_WEEKDAY' });
+      continue;
+    }
+
+    // 3. Check Capacity
+    const capacity = office.daily_capacity || 50;
+    const { count } = tokensStmt.countByDate.get(id, dateStr);
+
+    let status = 'AVAILABLE';
+    if (count >= capacity) status = 'FULL';
+    else if (count >= capacity * 0.7) status = 'BUSY';
+
+    calendar.push({ date: dateStr, status, booked: count, capacity });
+  }
+
+  res.json({ calendar });
+});
+
+// Duplicate handlers removed.
+// The primary handlers at lines 859 and 878 must be fixed instead.
+// I will apply the fix to the primary handlers in a separate chunk.
+// Here I am removing the duplicates.
+
+// Extended Config (Supports Counters + Calendar settings)
+app.patch('/api/offices/:id/config', authenticateToken, (req, res) => {
+  const { id } = req.params;
+
+  if (req.user.role !== 'admin' && req.user.role !== 'office_owner') return res.sendStatus(403);
+
+  const { counterCount, workingDays, allowSunday, dailyCapacity } = req.body;
+  const updates = [];
+  const params = { id };
+
+  if (counterCount !== undefined) {
+    // Legacy support: update active_counters
+    db.prepare('UPDATE offices SET active_counters = ? WHERE id = ?').run(counterCount, id);
+    // Also trigger queue recalc if counters changed?
+    // For now simplistic update
+  }
+
+  if (workingDays !== undefined) {
+    updates.push("working_days = @workingDays");
+    params.workingDays = workingDays;
+  }
+
+  if (allowSunday !== undefined) {
+    updates.push("allow_sunday = @allowSunday");
+    params.allowSunday = allowSunday ? 1 : 0;
+  }
+
+  if (dailyCapacity !== undefined) {
+    updates.push("daily_capacity = @dailyCapacity");
+    params.dailyCapacity = dailyCapacity;
+  }
+
+  if (updates.length > 0) {
+    db.prepare(`UPDATE offices SET ${updates.join(', ')} WHERE id = @id`).run(params);
+  }
+
+  // Trigger update
+  io.to(`office_${id}`).emit('office_update', { id, ...params, counterCount });
 
   recalculateQueue(id);
   res.json({ success: true });
@@ -2403,27 +2489,40 @@ cron.schedule('0 20 * * *', () => {
 });
 
 // 2. Midnight Migration (FUTURE -> WAIT)
-cron.schedule('0 0 * * *', () => {
-  console.log('Running Midnight Migration (FUTURE -> WAIT)...');
+const runMigration = () => {
+  console.log('Running Migration (FUTURE -> WAIT)...');
   try {
-    const today = new Date().toISOString().split('T')[0];
+    // Use Local Date (YYYY-MM-DD) correctly relative to server timezone
+    // This ensures if it's Jan 26th locally, we process Jan 26th's bookings.
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const today = `${year}-${month}-${day}`;
+
+    // Also catch any PAST dates that are still FUTURE (e.g. yesterday's missed ones)
     const info = db.prepare(`
-      UPDATE tokens
-      SET status = 'WAIT', allocation_time = NULL 
-      WHERE appointment_date = ? AND status = 'FUTURE'
-    `).run(today);
+        UPDATE tokens
+        SET status = 'WAIT', allocation_time = NULL 
+        WHERE appointment_date <= ? AND status = 'FUTURE'
+      `).run(today);
 
-    console.log(`Migrated ${info.changes} tokens to Active Queue for ${today}`);
+    if (info.changes > 0) {
+      console.log(`Migrated ${info.changes} tokens to Active Queue for/before ${today}`);
+      // Trigger Recalc
+      const offices = db.prepare('SELECT id FROM offices WHERE state = "LIVE"').all();
+      offices.forEach(o => {
+        try { recalculateQueue(o.id); } catch (e) { }
+      });
+    }
+  } catch (e) { console.error("Migration Error:", e); }
+};
 
-    // Trigger Recalc for all offices that had changes?
-    // Hard to know which offices. Just iterate active offices or leave it to be picked up.
-    // Ideally we iterate all "Active" offices.
-    const offices = db.prepare('SELECT id FROM offices WHERE state = "LIVE"').all();
-    offices.forEach(o => {
-      try { recalculateQueue(o.id); } catch (e) { }
-    });
+// Run immediately on startup to catch missed jobs
+runMigration();
 
-  } catch (e) { console.error("Midnight Migration Error:", e); }
+cron.schedule('0 0 * * *', () => {
+  runMigration();
 });
 
 // 2. Same Day Reminder (7 AM)

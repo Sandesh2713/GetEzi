@@ -37,7 +37,17 @@ CREATE TABLE IF NOT EXISTS offices (
   average_velocity REAL DEFAULT 5.0,
   is_paused INTEGER DEFAULT 0,
   state TEXT DEFAULT 'LIVE',
-  pause_started_at TEXT
+  pause_started_at TEXT,
+  working_days TEXT DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat',
+  allow_sunday INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS office_holidays (
+  id TEXT PRIMARY KEY,
+  office_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  reason TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS users (

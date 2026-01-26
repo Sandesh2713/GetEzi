@@ -584,7 +584,7 @@ function RegisterView({ onSuccess, onSwitch, defaultRole = 'customer', onBack })
       const officeDetails = role === 'office_owner' ? {
         name: officeName, address, serviceType, openingTime, closingTime,
         dailyCapacity: parseInt(dailyCapacity), avgServiceMinutes: parseInt(avgServiceMinutes),
-        dailyCapacity: parseInt(dailyCapacity), avgServiceMinutes: parseInt(avgServiceMinutes),
+
         counterCount: parseInt(counterCount), autoNoShow,
         working_days: Object.keys(workingDays).filter(d => workingDays[d]).join(','),
         allow_sunday: allowSunday ? 1 : 0
@@ -3283,7 +3283,7 @@ function App() {
           lng: formData.userLng,
           note: formData.note,
           customerAddress: formData.customerAddress,
-          customerAddress: formData.customerAddress,
+
           travelTime: formData.travelTime,
           appointmentDate: formData.appointmentDate // Fixed: Pass appointment date
         }),
