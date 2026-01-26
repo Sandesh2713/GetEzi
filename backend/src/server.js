@@ -1320,6 +1320,48 @@ app.post('/api/tokens/:id/arrive', authenticateToken, (req, res) => {
   }
 });
 
+// Recall Customer (Re-notify)
+app.post('/api/tokens/:id/recall', authenticateToken, (req, res) => {
+  try {
+    const token = tokensStmt.getById.get(req.params.id);
+    if (!token) return res.status(404).json({ error: 'Not found' });
+
+    // SECURITY: Strict Operator Check
+    const staffUser = usersStmt.getById.get(req.user.id);
+    if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+      return res.status(403).json({ error: 'Access Denied: Only staff or office owners can recall tokens.' });
+    }
+
+    // 1. Socket Notification
+    if (token.user_id) {
+      io.to(`user_${token.user_id}`).emit('notification', {
+        message: `Recall: Please proceed to Counter ${token.assigned_counter} immediately!`,
+        type: 'alert'
+      });
+    }
+
+    // 2. Email Notification
+    const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
+    if (recipientEmail) {
+      const office = officesStmt.getById.get(token.office_id);
+      sendEmail(recipientEmail, 'Recall Alert - GetEzi', `
+        <div style="font-family: sans-serif; padding: 20px; text-align: center;">
+          <h2 style="color: #d32f2f;">Please Proceed to Counter ${token.assigned_counter}</h2>
+          <p>Hello ${token.user_name},</p>
+          <p>We are waiting for you at <strong>${office.name}</strong>.</p>
+          <p>Your token <strong>#${token.token_number}</strong> has been called again.</p>
+          <p>Please arrive immediately to avoid cancellation.</p>
+        </div>
+      `);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Recall Endpoint Error:', err);
+    res.status(500).json({ error: 'System Error: ' + err.message });
+  }
+});
+
 // Admin: Config Counters
 // Admin: Config Counters
 // Admin: Config Counters
