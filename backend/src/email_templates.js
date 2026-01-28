@@ -32,7 +32,7 @@ const escapeHtml = (text) => {
     .replace(/'/g, "&#039;");
 };
 
-const bookingConfirmation = (name, tokenNumber, officeName, address, time) => layout(`
+const bookingConfirmation = (name, tokenNumber, officeName, address, time, serviceEta) => layout(`
   <h2 style="color: #d93025;">Booking Confirmed!</h2>
   <p>Hello <strong>${escapeHtml(name)}</strong>,</p>
   <p>Your token for <strong>${escapeHtml(officeName)}</strong> has been booked successfully.</p>
@@ -41,11 +41,12 @@ const bookingConfirmation = (name, tokenNumber, officeName, address, time) => la
     <p style="margin: 5px 0 0 0;">Your Token Number</p>
   </div>
   <p><strong>Location:</strong> ${escapeHtml(address)}</p>
-  <p><strong>Time:</strong> ${new Date(time).toLocaleString()}</p>
+  <p><strong>Booked At:</strong> ${new Date(time).toLocaleString()}</p>
+  ${serviceEta ? `<p><strong>Expected Service Time:</strong> ${new Date(serviceEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>` : ''}
   <p>We will notify you when it's time to travel to the office.</p>
 `);
 
-const travelInstruction = (name, tokenNumber, officeName, address, lat, lng, travelStart, arrival) => layout(`
+const travelInstruction = (name, tokenNumber, officeName, address, lat, lng, travelStart, arrival, serviceEta) => layout(`
   <h2 style="color: #1a73e8;">Time to Leave!</h2>
   <p>Hello <strong>${escapeHtml(name)}</strong>,</p>
   <p>It is time to start traveling to <strong>${escapeHtml(officeName)}</strong> for your appointment.</p>
@@ -53,6 +54,7 @@ const travelInstruction = (name, tokenNumber, officeName, address, lat, lng, tra
     <p><strong>Token:</strong> #${escapeHtml(tokenNumber)}</p>
     <p><strong>Est. Travel Time:</strong> ${Math.round((new Date(arrival) - new Date(travelStart)) / 60000)} mins</p>
     <p><strong>Target Arrival:</strong> ${new Date(arrival).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+    ${serviceEta ? `<p><strong>Expected Turn:</strong> ${new Date(serviceEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>` : ''}
   </div>
   <p><a href="https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}" style="display: inline-block; background-color: #1a73e8; color: #fff; text-decoration: none; padding: 10px 20px; border-radius: 5px;">Get Directions</a></p>
 `);

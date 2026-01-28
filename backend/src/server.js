@@ -366,12 +366,14 @@ const usersStmt = {
 };
 
 tokensStmt.updatePrediction = db.prepare(`
-  UPDATE tokens SET 
-    arrival_score = @score,
-    arrival_status = @status,
-    expected_arrival_time = @expected_time
-  WHERE id = @id
-`);
+    UPDATE tokens SET 
+      arrival_score = @score,
+      arrival_status = @status,
+      expected_arrival_time = @expected_time
+    WHERE id = @id
+  `);
+tokensStmt.updateTravelTime = db.prepare(`UPDATE tokens SET travel_time_minutes = @travel WHERE id = @id`);
+
 
 const historyStmt = {
   archive: db.prepare(`
@@ -459,7 +461,149 @@ const enrichTokens = (tokens) => {
   });
 };
 
-const recalculateQueue = (officeId) => {
+/* --- Helpers --- */
+const haversineDistance = (lat1, lon1, lat2, lon2) => {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return null;
+  const toRad = x => x * Math.PI / 180;
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+};
+
+const EtaService = {
+  // Travel Time (OSRM -> Haversine Fallback)
+  // Note: Using 'fetch' (Node 18+)
+  getTravelTime: async (originLat, originLng, destLat, destLng) => {
+    if (!originLat || !originLng || !destLat || !destLng) return 0;
+
+    // 1. Try OSRM
+    try {
+      const url = `http://router.project-osrm.org/route/v1/driving/${originLng},${originLat};${destLng},${destLat}?overview=false`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.routes && data.routes.length > 0) {
+          const seconds = data.routes[0].duration;
+          return Math.ceil(seconds / 60);
+        }
+      }
+    } catch (e) {
+      // Ignore OSRM error, fall back
+    }
+
+    // 2. Haversine Fallback (Speed: 30km/h = 0.5 km/min)
+    const distKm = haversineDistance(originLat, originLng, destLat, destLng);
+    if (!distKm) return 15; // default
+    const speedKmMin = 30 / 60; // 0.5 km/min
+    return Math.ceil(distKm / speedKmMin);
+  },
+
+  adjustForLunch: (startTimeMs, office) => {
+    if (!office.lunch_start || !office.lunch_end) return new Date(startTimeMs);
+
+    const date = new Date(startTimeMs);
+    const dateStr = date.toISOString().split('T')[0];
+
+    const lunchStart = new Date(`${dateStr}T${office.lunch_start}:00`);
+    const lunchEnd = new Date(`${dateStr}T${office.lunch_end}:00`);
+
+    if (date >= lunchStart && date < lunchEnd) {
+      return lunchEnd;
+    }
+    return date;
+  },
+
+  processQueue: async (office, tokens) => {
+    // 1. Sort: Created At (FIFO)
+    const activeTokens = tokens.filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
+    activeTokens.sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    // 2. Count Active Counters
+    const activeStaff = getActiveStaffCount(office.id);
+    const N = Math.max(1, activeStaff);
+    const serviceTime = office.avg_service_minutes || 10;
+
+    // Process in Parallel
+    const tokenPromises = activeTokens.map(async (token, index) => {
+      const et = { ...token };
+
+      // Determine Position 0-based index in FILTERED list (activeTokens)
+      // Note: index IS the position in the queue
+      let positionIndex = index;
+
+      // A. Travel Time (Async)
+      // Check if we need to fetch travel time
+      let travel = et.travel_time_minutes;
+      let didFetch = false;
+
+      // Only fetch if missing AND we have coords AND office has coords
+      if (!travel && et.lat && et.lng && office.latitude && office.longitude) {
+        // Optimistic: Check Haversine first. If very close, skip OSRM?
+        // No, user wants OSRM.
+        // We will fetch OSRM.
+        try {
+          const fetchedTravel = await EtaService.getTravelTime(et.lat, et.lng, office.latitude, office.longitude);
+          if (fetchedTravel) {
+            travel = fetchedTravel;
+            didFetch = true;
+          }
+        } catch (e) { /* fallback */ }
+
+        if (!travel) {
+          // Haversine fallback locally?
+          const dist = haversineDistance(et.lat, et.lng, office.latitude, office.longitude);
+          travel = Math.ceil(dist / 0.5);
+        }
+      }
+
+      et.travel_time_minutes = travel || 15;
+
+      // SAVE to DB if fetched
+      if (didFetch && et.travel_time_minutes) {
+        try {
+          tokensStmt.updateTravelTime.run({ travel: et.travel_time_minutes, id: et.id });
+        } catch (dbErr) {
+          console.error("Failed to persist travel time:", dbErr);
+        }
+      }
+
+      // B. Queue Wait
+      if (et.status === 'CALLED') {
+        et.wait_minutes = 0;
+        et.eta = 0;
+        et.expected_arrival = new Date().toISOString();
+      } else {
+        const pos = positionIndex + 1; // 1-based
+
+        // NEW FORMULA: batch = floor((pos - 1) / N)
+        const batch = Math.floor((pos - 1) / N);
+        const waitMins = batch * serviceTime;
+
+        // Lunch Adjust
+        const now = Date.now();
+        const estStart = new Date(now + waitMins * 60000);
+        const adjStart = EtaService.adjustForLunch(estStart.getTime(), office);
+
+        const finalWaitMs = adjStart.getTime() - now;
+        const finalWaitMins = Math.max(0, Math.ceil(finalWaitMs / 60000));
+
+        et.wait_minutes = finalWaitMins;
+        et.eta = finalWaitMins + et.travel_time_minutes;
+        et.expected_arrival = new Date(Date.now() + et.eta * 60000).toISOString();
+      }
+      return et;
+    });
+
+    const enriched = await Promise.all(tokenPromises);
+    return enriched;
+  }
+};
+const recalculateQueue = async (officeId) => {
   // DEBUG CHECKS
   if (!tokensStmt || !tokensStmt.getForOffice) {
     console.error("FATAL: tokensStmt or tokensStmt.getForOffice is undefined!");
@@ -486,7 +630,6 @@ const recalculateQueue = (officeId) => {
   const activeTokens = allTokens.filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
 
   // 1. Define Capacity
-  // N is now the number of *active* staff who are operators and have an assigned counter
   const N = getActiveStaffCount(officeId);
   const M = N * 3; // Max allocated tokens
 
@@ -496,54 +639,29 @@ const recalculateQueue = (officeId) => {
   let waitTokens = activeTokens.filter(t => t.status === 'WAIT');
 
   // --- 1.2 Auto-Swap for Optimization ---
-  // If an ALLOCATED token is PROBABLE_NO_SHOW, and we have a WAIT token that is ARRIVED, swap them.
-  // This ensures counters are fed with confirmed content.
   allocatedTokens.forEach(badToken => {
-    if (badToken.presence_status === 'ARRIVED') return; // Safe
-    const score = calculateArrivalScore(badToken); // Reuse calculation or store on token
+    if (badToken.presence_status === 'ARRIVED') return;
+    const score = calculateArrivalScore(badToken);
     if (score < 0.25) {
-      // Look for a candidate
       const candidateIdx = waitTokens.findIndex(t => t.presence_status === 'ARRIVED');
       if (candidateIdx >= 0) {
         const goodToken = waitTokens[candidateIdx];
-
         console.log(`Auto-Swapping Token ${badToken.token_number} (Lazy) with ${goodToken.token_number} (Arrived)`);
-
         const now = toIso();
-        // Demote Bad Token
-        tokensStmt.updatePrediction.run({ id: badToken.id, score: score, status: 'SWAPPED_WAIT', expected_time: null }); // Preserve score
+
+        tokensStmt.updatePrediction.run({ id: badToken.id, score: score, status: 'SWAPPED_WAIT', expected_time: null });
         tokensStmt.updateStatus.run({
-          id: badToken.id,
-          status: 'WAIT',
-          allocation_time: null,
-          service_start_time: null,
-          expected_completion_time: null,
-          called_at: null,
-          completed_at: null,
-          now: now,
-          eta: null,
-          assigned_counter: null,
-          called_by_counter: null,
-          appointment_date: null
+          id: badToken.id, status: 'WAIT', allocation_time: null, service_start_time: null,
+          expected_completion_time: null, called_at: null, completed_at: null, now: now,
+          eta: null, assigned_counter: null, called_by_counter: null, appointment_date: null
         });
 
-        // Promote Good Token
         tokensStmt.updateStatus.run({
-          id: goodToken.id,
-          status: 'ALLOCATED',
-          allocation_time: now, // Give it fresh start
-          service_start_time: null,
-          expected_completion_time: null,
-          called_at: null,
-          completed_at: null,
-          now: now,
-          eta: null,
-          assigned_counter: badToken.assigned_counter, // Inherit specific counter!
-          called_by_counter: null,
-          appointment_date: null
+          id: goodToken.id, status: 'ALLOCATED', allocation_time: now, service_start_time: null,
+          expected_completion_time: null, called_at: null, completed_at: null, now: now,
+          eta: null, assigned_counter: badToken.assigned_counter, called_by_counter: null, appointment_date: null
         });
 
-        // Update local lists for rest of function to be semi-accurate (though function will likely re-run soon)
         waitTokens.splice(candidateIdx, 1);
       }
     }
@@ -556,8 +674,7 @@ const recalculateQueue = (officeId) => {
 
   // --- 1.5 Grace Period Logic (Auto No-Show) ---
   if (allocatedTokens.length > 0 && office.auto_noshow_enabled) {
-    allocatedTokens.forEach((token, idx) => {
-      // Logic: Only apply if user is NOT arrived and feature is enabled
+    allocatedTokens.forEach((token) => {
       if (token.presence_status !== 'ARRIVED') {
         const nowMs = Date.now();
         if (!token.eligibility_time) {
@@ -580,20 +697,10 @@ const recalculateQueue = (officeId) => {
         if (nowMs - elgTime > GRACE_PERIOD_MS) {
           console.log(`Auto No-Show for Token ${token.token_number} (Grace: ${graceMinutes}m)`);
           tokensStmt.updateStatus.run({
-            id: token.id,
-            status: 'no-show', // Make sure this matches status check elsewhere ('no-show' vs 'cancelled')
-            allocation_time: token.allocation_time,
-            service_start_time: null,
-            expected_completion_time: null,
-            called_at: null,
-            completed_at: toIso(),
-            now: toIso(),
-            eta: null,
-            assigned_counter: token.assigned_counter || null,
-            called_by_counter: token.called_by_counter || null,
-            appointment_date: null
+            id: token.id, status: 'no-show', allocation_time: token.allocation_time, service_start_time: null,
+            expected_completion_time: null, called_at: null, completed_at: toIso(), now: toIso(),
+            eta: null, assigned_counter: null, called_by_counter: null, appointment_date: null
           });
-          // Notify
           const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : token.user_email;
           if (recipientEmail) {
             sendEmail(recipientEmail, 'Missed Appointment - GetEzi', emailTemplates.tokenNoShow(token.user_name, token.token_number, office.name));
@@ -619,148 +726,71 @@ const recalculateQueue = (officeId) => {
           return u && u.role === 'staff' && u.assigned_counter;
         })
         .map(s => usersStmt.getById.get(s.user_id).assigned_counter)
-        .filter((value, index, self) => self.indexOf(value) === index) // Unique counters
-        .sort((a, b) => a - b); // Sort numerically
-    } catch (e) {
-      console.error("FATAL: recalculateQueue -> activeCounters calculation failed", e);
-      throw e;
-    }
+        .filter((value, index, self) => self.indexOf(value) === index)
+        .sort((a, b) => a - b);
+    } catch (e) { console.error("FATAL: activeCounters error", e); }
 
     activeCounters.forEach(c => counterLoad[c] = 0);
-
     allocatedTokens.forEach(t => {
-      if (t.assigned_counter && activeCounters.includes(t.assigned_counter)) {
-        counterLoad[t.assigned_counter]++;
-      }
+      if (t.assigned_counter && activeCounters.includes(t.assigned_counter)) counterLoad[t.assigned_counter]++;
     });
 
     toPromote.forEach(token => {
-      // Find counter with min load among active counters
       let bestCounter = null;
       let minLoad = Infinity;
-
-      if (activeCounters.length === 0) {
-        console.warn(`No active counters for office ${officeId}. Cannot assign token.`);
-        return; // Cannot assign if no active counters
-      }
-
+      if (activeCounters.length === 0) return;
       for (const c of activeCounters) {
         if (counterLoad[c] < minLoad) {
           minLoad = counterLoad[c];
           bestCounter = c;
         }
       }
-
-      if (!bestCounter) {
-        console.warn(`Could not find best counter for token ${token.id}. Skipping assignment.`);
-        return;
-      }
-
-      // Increment load for next iteration
+      if (!bestCounter) return;
       counterLoad[bestCounter]++;
 
       const now = toIso();
       tokensStmt.updateStatus.run({
-        id: token.id,
-        status: 'ALLOCATED',
-        allocation_time: now,
-        service_start_time: null, // Calc below
-        expected_completion_time: null,
-        called_at: null,
-        completed_at: null,
-        now: now,
-        eta: null,
-        eta: null,
-        assigned_counter: bestCounter, // ASSIGN HERE
-        called_by_counter: null,
-        appointment_date: null
+        id: token.id, status: 'ALLOCATED', allocation_time: now, service_start_time: null,
+        expected_completion_time: null, called_at: null, completed_at: null, now: now,
+        eta: null, assigned_counter: bestCounter, called_by_counter: null, appointment_date: null
       });
       token.status = 'ALLOCATED';
-      token.allocation_time = now;
-      token.assigned_counter = bestCounter; // Update local obj for immediate use
+      token.assigned_counter = bestCounter;
 
       if (token.user_id) {
         io.to(`user_${token.user_id}`).emit('notification', { message: `allocated-counter-${bestCounter}` });
       }
 
-      // Email Notification: Travel Instruction
       const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
       if (recipientEmail) {
-        const travelStart = now;
-        const arrival = new Date(new Date(now).getTime() + (token.travel_time_minutes || 15) * 60000).toISOString();
+        // Calculate ETA for email (Exact Service Time)
+        // Heuristic: This token is joining the allocated/wait list.
+        // We can estimate wait based on current allocation count.
+        const pendingCount = allocatedTokens.length; // Before this token
+        // Token is roughly at position pendingCount (0-based) relative to service.
+        const estimatedBatch = Math.floor(pendingCount / Math.max(1, N));
+        const estimatedWaitMins = estimatedBatch * (office.avg_service_minutes || 10);
+
+        const estStart = new Date(Date.now() + estimatedWaitMins * 60000);
+        const adjStart = EtaService.adjustForLunch(estStart.getTime(), office);
+        const serviceEta = adjStart.toISOString();
+
         sendEmail(recipientEmail, 'Time to Leave - GetEzi', emailTemplates.travelInstruction(
-          token.user_name,
-          token.token_number,
-          office.name,
-          office.address || '',
-          office.latitude,
-          office.longitude,
-          travelStart,
-          arrival
+          token.user_name, token.token_number, office.name, office.address || '',
+          office.latitude, office.longitude, now,
+          new Date(new Date(now).getTime() + (token.travel_time_minutes || 15) * 60000).toISOString(),
+          serviceEta
         ));
       }
     });
-    // Refresh lists after promotion
     allocatedTokens = [...allocatedTokens, ...toPromote];
     waitTokens = waitTokens.slice(slotsOpen);
   }
 
-  // 3. Global Queue Position & ETA Calculation
-  // We treat ALL active tokens as a single FIFO queue for positioning
-  // Order: CALLED (served) -> ALLOCATED (waiting) -> WAIT (remote)
-  // Actually, 'CALLED' are technically positions 1..N (or however many active)
-
-  // Re-fetch strict order? already sorted by created_at which handles the FIFO naturally.
-  // Just verify `activeTokens` order. Since `allTokens` is sorted by `created_at`, `activeTokens` is too.
-  // Wait. `toPromote` mutation of local variables `allocatedTokens` doesn't affect `activeTokens` array references? 
-  // Yes it does if objects are ref. But I mutated `waitTokens` by slice.
-  // Safest to re-construct `queue` list.
-
-  const queue = [...calledTokens, ...allocatedTokens, ...waitTokens].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-  const serviceTime = office.avg_service_minutes || 10;
-  const nowTime = Date.now();
-
-  queue.forEach((token, index) => {
-    // Position 1-based
-    const position = index + 1;
-
-    // Formula: ETA = (ceil(position / N) - 1) * service_time
-    const waitUnits = Math.ceil(position / N) - 1;
-    const waitMinutes = Math.max(0, waitUnits * serviceTime);
-
-    const serviceStartTs = nowTime + (waitMinutes * 60000);
-    // Adjust for Lunch Break
-    const rawServiceStart = new Date(serviceStartTs);
-    const adjustedServiceStart = OfficeStatusEngine.adjustForLunch(rawServiceStart, office);
-    const serviceStart = adjustedServiceStart.toISOString();
-
-    // Store calculated data
-    // Note: for WAIT tokens, this 'service_start_time' is the predicted Call time.
-    // Frontend will derive Allocation Time from this (Call Time - 3 * ServiceTime or similar)
-
-    // Only update if changed? Or always update for eta freshness.
-    // We strictly update `eta` and `service_start_time`.
-
-    // We assume 'CALLED' status is already set.
-    // We assume 'ALLOCATED' status is already set.
-    // We assume 'WAIT' status is already set.
-
-    tokensStmt.updateStatus.run({
-      id: token.id,
-      status: token.status,
-      allocation_time: token.allocation_time, // Preserve
-      service_start_time: serviceStart,
-      expected_completion_time: token.expected_completion_time,
-      called_at: token.called_at,
-      completed_at: null,
-      eta: waitMinutes,
-      now: toIso(),
-      assigned_counter: token.assigned_counter || null,
-      called_by_counter: token.called_by_counter || null,
-      appointment_date: null
-    });
-  });
+  // --- ETA CALCULATION (Dynamic) ---
+  const allTokensWithUpdates = tokensStmt.getForOffice.all(officeId);
+  const processedTokens = await EtaService.processQueue(office, allTokensWithUpdates);
+  const finalTokens = enrichTokens(processedTokens);
 
   // Fetch & Enrich Active Staff
   const staffRaw = activeStaffStmt.getForOffice.all(officeId);
@@ -772,31 +802,20 @@ const recalculateQueue = (officeId) => {
   // Emit Global Update
   io.to(`office_${officeId}`).emit('queue_update', {
     officeId,
-    tokens: enrichTokens(tokensStmt.getForOffice.all(officeId)),
-    active_staff, // Send to frontend
+    tokens: finalTokens,
+    active_staff,
     stats: {
       wait: waitTokens.length,
       allocated: allocatedTokens.length,
       called: calledTokens.length,
       M, N,
-      serviceTime
+      serviceTime: office.avg_service_minutes || 10
     }
   });
+
+  return finalTokens;
 };
 
-/* --- Helpers --- */
-const haversineDistance = (lat1, lon1, lat2, lon2) => {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return null;
-  const toRad = x => x * Math.PI / 180;
-  const R = 6371;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
-    Math.sin(dLon / 2) * Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-};
 
 // AI Prediction Engine
 const calculateArrivalScore = (token, user) => {
@@ -886,7 +905,7 @@ app.delete('/api/offices/:id/holidays/:holidayId', authenticateToken, requireOff
 });
 
 // Create Token (Book)
-app.post('/api/offices/:id/book', (req, res) => {
+app.post('/api/offices/:id/book', async (req, res) => {
   try {
     const { id } = req.params;
     const office = ensureOffice(id);
@@ -963,9 +982,15 @@ app.post('/api/offices/:id/book', (req, res) => {
 
     // Only Recalculate if TODAY
     const today = new Date().toISOString().split('T')[0];
+    let serviceEta = null;
+
     if (dateStr === today) {
       try {
-        recalculateQueue(id);
+        const updatedTokens = await recalculateQueue(id);
+        const myEnrichedToken = updatedTokens.find(t => t.id === token.id);
+        if (myEnrichedToken && myEnrichedToken.expected_arrival) {
+          serviceEta = myEnrichedToken.expected_arrival;
+        }
       } catch (calcErr) {
         console.error('Recalculate Queue Failed (Non-fatal):', calcErr);
       }
@@ -980,7 +1005,8 @@ app.post('/api/offices/:id/book', (req, res) => {
         token.token_number,
         office.name,
         office.address || '',
-        token.created_at
+        token.created_at,
+        serviceEta
       ));
     }
 
@@ -1652,11 +1678,14 @@ app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
 
 // Public: Get Office Status (Original Path was /api/offices/:id)
 // App.jsx calls /api/offices/:id for details
-app.get('/api/offices/:id', (req, res) => {
+app.get('/api/offices/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const office = ensureOffice(id);
-    const tokens = enrichTokens(tokensStmt.getForOffice.all(id));
+    const rawTokens = tokensStmt.getForOffice.all(id);
+    // Dynamic ETA Calculation
+    const processedTokens = await EtaService.processQueue(office, rawTokens);
+    const tokens = enrichTokens(processedTokens);
 
     // Fetch Active Staff with Names
     const staffRaw = activeStaffStmt.getForOffice.all(id);
