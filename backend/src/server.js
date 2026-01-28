@@ -463,44 +463,80 @@ const enrichTokens = (tokens) => {
 
 /* --- Helpers --- */
 const haversineDistance = (lat1, lon1, lat2, lon2) => {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return null;
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
   const toRad = x => x * Math.PI / 180;
-  const R = 6371;
+  const R = 6371e3; // meters
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lon2 - lon1);
   const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
+  return Math.round(R * c); // returns meters
+};
+
+const calculateTravelETA = (distanceMeters, osrmSeconds = null) => {
+  // 1. OSRM Priority
+  if (osrmSeconds !== null && osrmSeconds !== undefined) {
+    const mins = Math.ceil(osrmSeconds / 60);
+    return Math.max(1, Math.min(mins, 180));
+  }
+
+  // 2. Fallback: 60km/h => 1000m = 1 minute
+  if (!distanceMeters) return 1;
+
+  const km = distanceMeters / 1000;
+  const mins = Math.ceil(km); // 1 km = 1 min
+  return Math.max(1, Math.min(mins, 180));
+}; // End calculateTravelETA
+
+// Travel Time Calculation (OSRM with Strict Fallback)
+const calculateTravelTime = async (originLat, originLng, destLat, destLng) => {
+  if (!originLat || !originLng || !destLat || !destLng) return null;
+
+  let meters = 0;
+  let seconds = null;
+  let source = 'Haversine';
+
+  try {
+    // 1. Try OSRM
+    const url = `http://router.project-osrm.org/route/v1/driving/${originLng},${originLat};${destLng},${destLat}?overview=false`;
+    const response = await fetch(url);
+    if (response.ok) {
+      const data = await response.json();
+      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        seconds = route.duration;
+        meters = route.distance; // OSRM distance in meters
+        source = 'OSRM';
+      }
+    }
+  } catch (error) {
+    console.error('OSRM Calculation Failed:', error.message);
+  }
+
+  // 2. Fallback Distance if OSRM failed
+  if (source === 'Haversine') {
+    meters = haversineDistance(originLat, originLng, destLat, destLng);
+  }
+
+  // 3. Strict ETA Logic
+  const minutes = calculateTravelETA(meters, seconds);
+
+  return {
+    minutes,
+    distanceKm: (meters / 1000).toFixed(1),
+    source
+  };
 };
 
 const EtaService = {
   // Travel Time (OSRM -> Haversine Fallback)
   // Note: Using 'fetch' (Node 18+)
   getTravelTime: async (originLat, originLng, destLat, destLng) => {
-    if (!originLat || !originLng || !destLat || !destLng) return 0;
-
-    // 1. Try OSRM
-    try {
-      const url = `http://router.project-osrm.org/route/v1/driving/${originLng},${originLat};${destLng},${destLat}?overview=false`;
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        if (data.routes && data.routes.length > 0) {
-          const seconds = data.routes[0].duration;
-          return Math.ceil(seconds / 60);
-        }
-      }
-    } catch (e) {
-      // Ignore OSRM error, fall back
-    }
-
-    // 2. Haversine Fallback (Speed: 30km/h = 0.5 km/min)
-    const distKm = haversineDistance(originLat, originLng, destLat, destLng);
-    if (!distKm) return 15; // default
-    const speedKmMin = 30 / 60; // 0.5 km/min
-    return Math.ceil(distKm / speedKmMin);
+    // Use the comprehensive helper now
+    const result = await calculateTravelTime(originLat, originLng, destLat, destLng);
+    return result ? result.minutes : 1; // Default to 1 min if fail
   },
 
   adjustForLunch: (startTimeMs, office) => {
@@ -555,13 +591,13 @@ const EtaService = {
         } catch (e) { /* fallback */ }
 
         if (!travel) {
-          // Haversine fallback locally?
-          const dist = haversineDistance(et.lat, et.lng, office.latitude, office.longitude);
-          travel = Math.ceil(dist / 0.5);
+          // Local Fallback
+          const distMeters = haversineDistance(et.lat, et.lng, office.latitude, office.longitude);
+          travel = calculateTravelETA(distMeters, null);
         }
       }
 
-      et.travel_time_minutes = travel || 15;
+      et.travel_time_minutes = travel || 1; // Default minimum 1 min
 
       // SAVE to DB if fetched
       if (didFetch && et.travel_time_minutes) {
@@ -949,13 +985,31 @@ app.post('/api/offices/:id/book', async (req, res) => {
     if (!customerName || !customerEmail) return res.status(400).json({ error: 'Name and Email are required' });
     if ((!lat || !lng) && !customerAddress) return res.status(400).json({ error: 'Valid Location required' });
 
-    // Calc Travel Time
-    let travelTime = 15; // default
-    if (clientTravelTime) {
-      travelTime = clientTravelTime; // Trust client from OSRM
-    } else if (lat && lng && office.lat && office.lng) {
-      const dist = haversineDistance(lat, lng, office.lat, office.lng);
-      travelTime = Math.ceil(dist * 2);
+
+    // Calc Travel Time & Map Links
+    let travelTime = 1; // Default minimum
+    let travelData = {};
+
+    if (lat && lng && office.latitude && office.longitude) {
+      // Use new Helper
+      travelData = await calculateTravelTime(lat, lng, office.latitude, office.longitude);
+
+      if (travelData) {
+        travelTime = travelData.minutes;
+
+        // Generate Map Links
+        const officeLat = office.latitude;
+        const officeLng = office.longitude;
+
+        travelData.googleDirections = `https://www.google.com/maps/dir/?api=1&destination=${officeLat},${officeLng}&travelmode=driving`;
+        travelData.googleView = `https://www.google.com/maps/search/?api=1&query=${officeLat},${officeLng}`;
+        travelData.appleMaps = `http://maps.apple.com/?daddr=${officeLat},${officeLng}`;
+
+        // Optional: OSM Map
+        // travelData.osmMap = ...
+      }
+    } else if (clientTravelTime) {
+      travelTime = clientTravelTime; // Trust client from OSRM if no coords on server but client sent time
     }
 
     const token = {
@@ -970,7 +1024,6 @@ app.post('/api/offices/:id/book', async (req, res) => {
       lng: lng || null,
       travel_time_minutes: travelTime,
       service_type: serviceType || 'General',
-      customer_address: customerAddress || '',
       customer_address: customerAddress || '',
       appointment_date: dateStr, // INSERT THIS
       status: isFuture ? 'FUTURE' : 'WAIT'
@@ -1006,7 +1059,8 @@ app.post('/api/offices/:id/book', async (req, res) => {
         office.name,
         office.address || '',
         token.created_at,
-        serviceEta
+        serviceEta,
+        travelData // Pass new data
       ));
     }
 

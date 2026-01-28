@@ -32,19 +32,45 @@ const escapeHtml = (text) => {
     .replace(/'/g, "&#039;");
 };
 
-const bookingConfirmation = (name, tokenNumber, officeName, address, time, serviceEta) => layout(`
-  <h2 style="color: #d93025;">Booking Confirmed!</h2>
-  <p>Hello <strong>${escapeHtml(name)}</strong>,</p>
-  <p>Your token for <strong>${escapeHtml(officeName)}</strong> has been booked successfully.</p>
-  <div style="background-color: #fff0f0; padding: 15px; border-radius: 5px; text-align: center; margin: 20px 0;">
-    <h1 style="font-size: 48px; margin: 0; color: #d93025;">#${escapeHtml(tokenNumber)}</h1>
-    <p style="margin: 5px 0 0 0;">Your Token Number</p>
+const bookingConfirmation = (name, tokenNumber, officeName, address, time, serviceEta, travelData) => {
+  const { travelMinutes, distanceKm, googleDirections, googleView, appleMaps } = travelData || {};
+
+  return layout(`
+  <div style="background:#ffffff;padding:24px;border-radius:12px">
+
+    <h2>You're Booked at ${escapeHtml(officeName)}</h2>
+
+    <p><b>Token:</b> ${escapeHtml(tokenNumber)}</p>
+    <p><b>Date:</b> ${new Date(time).toLocaleDateString()}</p>
+    <p><b>Address:</b> ${escapeHtml(address)}</p>
+
+    <hr style="border:0;border-top:1px solid #eee;margin:20px 0;"/>
+
+    ${travelMinutes ? `<p>🚗 Estimated travel time: <b>${travelMinutes} mins</b></p>` : ''}
+    ${distanceKm ? `<p>📏 Distance: <b>${distanceKm} km</b></p>` : ''}
+    ${serviceEta ? `<p>⏱️ Expected Service: <b>${new Date(serviceEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b></p>` : ''}
+
+    <div style="margin-top:18px">
+
+      ${googleDirections ? `
+      <a href="${googleDirections}"
+         style="background:#000;color:#fff;padding:12px 18px;
+         border-radius:8px;text-decoration:none;margin-right:8px;display:inline-block;">
+         Get Directions
+      </a>` : ''}
+
+      ${googleView ? `
+      <a href="${googleView}"
+         style="background:#eee;color:#000;padding:12px 18px;
+         border-radius:8px;text-decoration:none;display:inline-block;">
+         View on Map
+      </a>` : ''}
+
+    </div>
+
   </div>
-  <p><strong>Location:</strong> ${escapeHtml(address)}</p>
-  <p><strong>Booked At:</strong> ${new Date(time).toLocaleString()}</p>
-  ${serviceEta ? `<p><strong>Expected Service Time:</strong> ${new Date(serviceEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>` : ''}
-  <p>We will notify you when it's time to travel to the office.</p>
 `);
+};
 
 const travelInstruction = (name, tokenNumber, officeName, address, lat, lng, travelStart, arrival, serviceEta) => layout(`
   <h2 style="color: #1a73e8;">Time to Leave!</h2>
