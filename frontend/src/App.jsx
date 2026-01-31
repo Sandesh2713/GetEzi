@@ -15,6 +15,7 @@ import { StaffLoginView } from './components/auth/StaffLoginView';
 import { OwnerLoginView } from './components/auth/OwnerLoginView';
 import { OwnerRegistrationWizard } from './components/auth/OwnerRegistrationWizard';
 import { CustomerLoginView } from './components/auth/CustomerLoginView';
+import { CustomerSignupView } from './components/auth/CustomerSignupView';
 import CustomerPortal from './components/dashboard/CustomerPortal';
 import OwnerDashboard from './components/dashboard/OwnerDashboard';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -3583,7 +3584,7 @@ function App() {
       ) : view === 'create-office' ? (
         <CreateOfficeWizard onSubmit={handleCreateOffice} onBack={() => setView('admin')} />
       ) : view === 'register' ? (
-        // Route to Wizard for Owners, Standard View for others
+        // Route to Wizard for Owners, CustomerSignupView for Customers
         registerRole === 'office_owner' ? (
           <OwnerRegistrationWizard
             onSubmit={(data) => {
@@ -3597,12 +3598,11 @@ function App() {
             onBack={() => setView('landing')}
           />
         ) : (
-          <RegisterView
+          <CustomerSignupView
             onSuccess={() => {
               setView('verify-email');
             }}
-            onSwitch={() => setView('login')}
-            defaultRole={registerRole}
+            onSwitch={() => setView('login')} // Switches to CustomerLoginView if role persists or default login
             onBack={() => setView('landing')}
           />
         )
