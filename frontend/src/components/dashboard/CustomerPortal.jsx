@@ -12,6 +12,7 @@ import { SmartCalendar } from '../ui/SmartCalendar';
 
 import { useMemo } from 'react';
 
+
 export default function CustomerPortal({ user, onLogout, onRefresh, office = {}, availableOffices = [], onOfficeSelect, onBook, tokens = [], onUpdateToken }) {
     const [selectedOffice, setSelectedOffice] = useState(office?.id);
     const [showBookingModal, setShowBookingModal] = useState(false);
@@ -561,16 +562,8 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                             <Calendar size={120} className="absolute -bottom-6 -right-6 text-white/10 rotate-12 group-hover:scale-110 transition-transform duration-500" />
                         </div>
 
-                        {/* Status Alert */}
-                        <div className="bg-amber-50 border border-amber-100 rounded-2xl p-4 flex items-center gap-4">
-                            <div className="p-2 bg-amber-100 rounded-full text-amber-600 shrink-0">
-                                <Clock size={20} />
-                            </div>
-                            <div>
-                                <p className="font-bold text-amber-900 text-sm">Next opening</p>
-                                <p className="text-sm text-amber-800">{currentOffice?.name} is open and accepting visitors.</p>
-                            </div>
-                        </div>
+                        {/* Smart Info Banner */}
+
 
                         {/* Recent Bookings */}
                         <div>
