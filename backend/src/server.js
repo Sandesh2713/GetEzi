@@ -658,7 +658,8 @@ const recalculateQueue = async (officeId) => {
 
   let allTokens = [];
   try {
-    const today = new Date().toISOString().split('T')[0];
+    // FIX: Use Local Date (en-CA gives YYYY-MM-DD)
+    const today = new Date().toLocaleDateString('en-CA');
     allTokens = tokensStmt.getForOffice.all(officeId).filter(t => !t.appointment_date || t.appointment_date === today);
   } catch (e) {
     console.error("FATAL: recalculateQueue -> tokensStmt.getForOffice.all failed", e);
@@ -752,79 +753,37 @@ const recalculateQueue = async (officeId) => {
   let currentOccupancy = calledTokens.length + allocatedTokens.length;
   let slotsOpen = M - currentOccupancy;
 
-  if (slotsOpen > 0 && waitTokens.length > 0) {
-    const toPromote = waitTokens.slice(0, slotsOpen);
+  // --- SMART ASSIGNMENT LOGIC REMOVED ---
+  // Single Global Queue: Tokens stay in WAIT until called by ANY counter.
+  // This allows strict FIFO based on booking time across all counters.
+  // Tokens are filtered by 'ARRIVED' in the call-next endpoint.
+  // The original `if (slotsOpen > 0 && waitTokens.length > 0)` block and its contents have been removed.
+  // The following lines were part of the `toPromote.forEach` loop, which is now removed.
+  // They are kept here as a comment to indicate where they were.
+  /*
+  const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
+    if (recipientEmail) {
+      // Calculate ETA for email (Exact Service Time)
+      // Heuristic: This token is joining the allocated/wait list.
+      // We can estimate wait based on current allocation count.
+      const pendingCount = allocatedTokens.length; // Before this token
+      // Token is roughly at position pendingCount (0-based) relative to service.
+      const estimatedBatch = Math.floor(pendingCount / Math.max(1, N));
+      const estimatedWaitMins = estimatedBatch * (office.avg_service_minutes || 10);
 
-    // --- SMART ASSIGNMENT LOGIC ---
-    const counterLoad = {};
-    let activeCounters = [];
-    try {
-      activeCounters = activeStaffStmt.getForOffice.all(officeId)
-        .filter(s => {
-          const u = usersStmt.getById.get(s.user_id);
-          return u && u.role === 'staff' && u.assigned_counter;
-        })
-        .map(s => usersStmt.getById.get(s.user_id).assigned_counter)
-        .filter((value, index, self) => self.indexOf(value) === index)
-        .sort((a, b) => a - b);
-    } catch (e) { console.error("FATAL: activeCounters error", e); }
+      const estStart = new Date(Date.now() + estimatedWaitMins * 60000);
+      const adjStart = EtaService.adjustForLunch(estStart.getTime(), office);
+      const serviceEta = adjStart.toISOString();
 
-    activeCounters.forEach(c => counterLoad[c] = 0);
-    allocatedTokens.forEach(t => {
-      if (t.assigned_counter && activeCounters.includes(t.assigned_counter)) counterLoad[t.assigned_counter]++;
-    });
-
-    toPromote.forEach(token => {
-      let bestCounter = null;
-      let minLoad = Infinity;
-      if (activeCounters.length === 0) return;
-      for (const c of activeCounters) {
-        if (counterLoad[c] < minLoad) {
-          minLoad = counterLoad[c];
-          bestCounter = c;
-        }
-      }
-      if (!bestCounter) return;
-      counterLoad[bestCounter]++;
-
-      const now = toIso();
-      tokensStmt.updateStatus.run({
-        id: token.id, status: 'ALLOCATED', allocation_time: now, service_start_time: null,
-        expected_completion_time: null, called_at: null, completed_at: null, now: now,
-        eta: null, assigned_counter: bestCounter, called_by_counter: null, appointment_date: null
-      });
-      token.status = 'ALLOCATED';
-      token.assigned_counter = bestCounter;
-
-      if (token.user_id) {
-        io.to(`user_${token.user_id}`).emit('notification', { message: `allocated-counter-${bestCounter}` });
-      }
-
-      const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
-      if (recipientEmail) {
-        // Calculate ETA for email (Exact Service Time)
-        // Heuristic: This token is joining the allocated/wait list.
-        // We can estimate wait based on current allocation count.
-        const pendingCount = allocatedTokens.length; // Before this token
-        // Token is roughly at position pendingCount (0-based) relative to service.
-        const estimatedBatch = Math.floor(pendingCount / Math.max(1, N));
-        const estimatedWaitMins = estimatedBatch * (office.avg_service_minutes || 10);
-
-        const estStart = new Date(Date.now() + estimatedWaitMins * 60000);
-        const adjStart = EtaService.adjustForLunch(estStart.getTime(), office);
-        const serviceEta = adjStart.toISOString();
-
-        sendEmail(recipientEmail, 'Time to Leave - GetEzi', emailTemplates.travelInstruction(
-          token.user_name, token.token_number, office.name, office.address || '',
-          office.latitude, office.longitude, now,
-          new Date(new Date(now).getTime() + (token.travel_time_minutes || 15) * 60000).toISOString(),
-          serviceEta
-        ));
-      }
-    });
-    allocatedTokens = [...allocatedTokens, ...toPromote];
-    waitTokens = waitTokens.slice(slotsOpen);
-  }
+      sendEmail(recipientEmail, 'Time to Leave - GetEzi', emailTemplates.travelInstruction(
+        token.user_name, token.token_number, office.name, office.address || '',
+        office.latitude, office.longitude, now,
+        new Date(new Date(now).getTime() + (token.travel_time_minutes || 15) * 60000).toISOString(),
+        serviceEta
+      ));
+    }
+  */
+  // End of Recalculate Logic
 
   // --- ETA CALCULATION (Dynamic) ---
   const allTokensWithUpdates = tokensStmt.getForOffice.all(officeId);
@@ -1141,36 +1100,49 @@ app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, r
       return res.status(400).json({ error: `Counter ${cNum} is already serving Token #${busyToken.token_number}. Complete it first.` });
     }
 
-    // Find Logic - STRICT (User Req 5)
+    // Find Logic - STRICT GLOBAL QUEUE (User Req: Date/Time)
     // 1. Filter by Date (Today Only)
-    const today = new Date().toISOString().split('T')[0];
+    // FIX: Use Local Date (en-CA gives YYYY-MM-DD) to match User's 'Today' context
+    const today = new Date().toLocaleDateString('en-CA');
+    // Also include tokens with appointment_date matching today OR null (walk-ins)
     const todaysTokens = allTokens.filter(t => !t.appointment_date || t.appointment_date === today);
 
-    const allocated = todaysTokens.filter(t => t.status === 'ALLOCATED');
-    let candidates = allocated.filter(t => t.assigned_counter === cNum);
+    console.log(`[DEBUG CALL-NEXT] Total Tokens: ${allTokens.length}, Today (${today}): ${todaysTokens.length}`);
 
-    console.log(`Debug Call: cNum=${cNum}, Allocated=${allocated.length}, Candidates(Self)=${candidates.length}`);
+    // 2. Select Eligible Candidates
+    // - Must be WAIT (or ALLOCATED if we support manual pre-assign, but mostly WAIT now)
+    // - Must be ARRIVED (Strict Presence)
+    // - Must NOT be served/cancelled
+    let candidates = todaysTokens.filter(t =>
+      ['WAIT', 'ALLOCATED'].includes(t.status) &&
+      t.presence_status === 'ARRIVED'
+    );
 
-    // Filter ONLY Arrived (Requirement 3 & 5)
-    candidates = candidates.filter(t => t.presence_status === 'ARRIVED');
-
+    console.log(`[DEBUG CALL-NEXT] Filtered Candidates: ${candidates.length}`);
     if (candidates.length === 0) {
-      // Logic: If I have no arrived candidates assigned to me,
-      // Check if there are unassigned ARRIVED tokens I can pick up.
-      const unassignedArrived = allocated.filter(t => !t.assigned_counter && t.presence_status === 'ARRIVED');
-
-      if (unassignedArrived.length > 0) {
-        candidates = unassignedArrived;
-      }
+      console.log('--- WHY NO CANDIDATES? ---');
+      todaysTokens.forEach(t => {
+        console.log(`Token #${t.token_number}: Status=${t.status}, Presence=${t.presence_status}, Eligible=${['WAIT', 'ALLOCATED'].includes(t.status) && t.presence_status === 'ARRIVED'}`);
+      });
+      console.log('--------------------------');
     }
+
+    // 3. Sort Strictly by Appointment Time / FIFO
+    // Primary: Appointment Date/Time? (Actually date is filtered to today)
+    // Secondary: Created At (Booking Timestamp) - FIFO
+    candidates.sort((a, b) => {
+      // If we had specific time slots, we'd sort by that first.
+      // Here we rely on created_at which usually proxies booking time.
+      return new Date(a.created_at) - new Date(b.created_at);
+    });
+
+    console.log(`Debug Call: cNum=${cNum}, Pool=${candidates.length}`);
 
     let nextToken = null;
     if (candidates.length > 0) {
-      // Pick first arrived (FIFO by created_at usually, or just first in list)
-      // tokensStmt.getForOffice orders by created_at ASC
-      nextToken = candidates[0];
+      nextToken = candidates[0]; // Pick the oldest arrived
     } else {
-      return res.status(404).json({ error: 'No arrived customers waiting for service.' });
+      return res.status(404).json({ error: 'No arrived customers waiting in queue.' });
     }
 
     if (!nextToken) {

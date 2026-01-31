@@ -2790,7 +2790,7 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
 
           {/* RIGHT COLUMN: Queue List */}
           <div className="lg:col-span-1 space-y-6">
-            {/* Up Next Queue */}
+            {/* Unified Global Queue */}
             <motion.div
               className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden"
               variants={itemVariants}
@@ -2801,71 +2801,58 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
                   Up Next
                 </h3>
                 <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm font-bold">
-                  {myQueue.length}
+                  {/* Show count of all waiting tokens */}
+                  {allTokens.filter(t => ['WAIT', 'ALLOCATED'].includes(t.status)).length}
                 </span>
               </div>
 
-              <div className="max-h-[400px] overflow-y-auto">
-                {myQueue.length === 0 ? (
-                  <div className="p-12 text-center">
-                    <Users className="text-gray-300 mx-auto mb-3" size={32} />
-                    <p className="text-sm text-gray-400">No allocations</p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-gray-100">
-                    {myQueue.map((t, idx) => (
-                      <motion.div
-                        key={t.id}
-                        className={`p-4 hover:bg-purple-50 transition-colors ${idx === 0 ? 'bg-purple-50 border-l-4 border-purple-500' : ''}`}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: idx * 0.05 }}
-                      >
-                        <div className="font-bold text-gray-900 text-lg">#{t.token_number}</div>
-                        <div className="text-sm font-medium text-gray-700 mt-1">{t.user_name}</div>
-                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-2">
-                          <Clock size={12} />
-                          {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait
-                        </div>
-                        <div className="text-xs text-gray-500 mt-1">· {t.service_type || 'General'}</div>
-                      </motion.div>
-                    ))}
-                  </div>
-                )}
+              <div className="max-h-[600px] overflow-y-auto">
+                {/* Combined List: My Queue + General Queue -> Just Global Queue */}
+                {/* We filter by WAIT or ALLOCATED. Sort by allocation time or created_at */}
+                {(() => {
+                  const waitingTokens = allTokens.filter(t => ['WAIT', 'ALLOCATED'].includes(t.status))
+                    .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
-                {generalQueue.length > 0 && (
-                  <>
-                    <div className="bg-gray-50 px-6 py-3 border-t border-b border-gray-200 flex items-center justify-between">
-                      <h3 className="text-sm font-bold text-gray-500 uppercase tracking-wider flex items-center gap-2">
-                        <Users size={16} />
-                        General Pool
-                      </h3>
-                      <span className="px-2 py-0.5 bg-gray-200 text-gray-600 rounded-full text-xs font-bold">
-                        {generalQueue.length}
-                      </span>
-                    </div>
-                    <div className="divide-y divide-gray-100 bg-gray-50/50">
-                      {generalQueue.map((t) => (
+                  if (waitingTokens.length === 0) {
+                    return (
+                      <div className="p-12 text-center">
+                        <Users className="text-gray-300 mx-auto mb-3" size={32} />
+                        <p className="text-sm text-gray-400">Queue is empty</p>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="divide-y divide-gray-100">
+                      {waitingTokens.map((t, idx) => (
                         <motion.div
                           key={t.id}
-                          className="p-4 hover:bg-gray-100 transition-colors opacity-80 hover:opacity-100"
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
+                          className={`p-4 hover:bg-purple-50 transition-colors ${t.presence_status === 'ARRIVED' ? 'bg-white' : 'bg-gray-50 opacity-70'}`}
+                          initial={{ opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: idx * 0.05 }}
                         >
-                          <div className="flex justify-between items-center">
-                            <span className="font-bold text-gray-700">#{t.token_number}</span>
-                            <span className="text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600">General</span>
+                          <div className="flex justify-between items-start">
+                            <div>
+                              <div className="font-bold text-gray-900 text-lg">#{t.token_number}</div>
+                              <div className="text-sm font-medium text-gray-700 mt-1">{t.user_name}</div>
+                            </div>
+                            {t.presence_status === 'ARRIVED' ? (
+                              <span className="px-2 py-0.5 bg-green-100 text-green-700 text-xs font-bold rounded-full">Arrived</span>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-gray-200 text-gray-600 text-xs font-bold rounded-full">Not Arrived</span>
+                            )}
                           </div>
-                          <div className="text-sm text-gray-600 mt-1 truncate">{t.user_name}</div>
-                          <div className="flex items-center gap-2 text-xs text-gray-400 mt-2">
+                          <div className="flex items-center gap-2 text-xs text-gray-500 mt-2">
                             <Clock size={12} />
                             {Math.floor((new Date() - new Date(t.created_at)) / 60000)}m wait
                           </div>
+                          <div className="text-xs text-gray-500 mt-1">· {t.service_type || 'General'}</div>
                         </motion.div>
                       ))}
                     </div>
-                  </>
-                )}
+                  );
+                })()}
               </div>
             </motion.div>
 
