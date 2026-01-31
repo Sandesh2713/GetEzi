@@ -33,7 +33,10 @@ const escapeHtml = (text) => {
 };
 
 const bookingConfirmation = (name, tokenNumber, officeName, address, time, serviceEta, travelData) => {
-  const { travelMinutes, distanceKm, googleDirections, googleView, appleMaps } = travelData || {};
+  const {
+    travelTime, distanceKm, googleDirections, googleView, appleMaps,
+    avgWaitMinutes, totalMinutes, arrivalTime
+  } = travelData || {};
 
   return layout(`
   <div style="background:#ffffff;padding:24px;border-radius:12px">
@@ -46,9 +49,17 @@ const bookingConfirmation = (name, tokenNumber, officeName, address, time, servi
 
     <hr style="border:0;border-top:1px solid #eee;margin:20px 0;"/>
 
-    ${travelMinutes ? `<p>🚗 Estimated travel time: <b>${travelMinutes} mins</b></p>` : ''}
-    ${distanceKm ? `<p>📏 Distance: <b>${distanceKm} km</b></p>` : ''}
-    ${serviceEta ? `<p>⏱️ Expected Service: <b>${new Date(serviceEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b></p>` : ''}
+    <h3 style="margin-bottom:12px;color:#555;">ETA Details</h3>
+    ${avgWaitMinutes ? `<p style="margin:8px 0;">⏳ Avg Wait Time: <b>${avgWaitMinutes} mins</b></p>` : ''}
+    ${travelTime ? `<p style="margin:8px 0;">🚗 Travel Time: <b>${travelTime} mins</b></p>` : ''}
+    ${distanceKm ? `<p style="margin:8px 0;">📏 Distance: <b>${distanceKm} km</b></p>` : ''}
+    
+    <div style="background:#f4f4f4;padding:12px;border-radius:8px;margin:12px 0;">
+      ${totalMinutes ? `<p style="margin:0;font-size:16px;">⏱️ Total ETA: <b>${totalMinutes} mins</b></p>` : ''}
+      ${arrivalTime ? `<p style="margin:8px 0 0 0;font-size:16px;">🏁 Target Arrival: <b>${new Date(arrivalTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b></p>` : ''}
+    </div>
+
+    ${serviceEta ? `<p style="margin-top:20px;color:#666;">🔔 Expected Service: <b>${new Date(serviceEta).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</b></p>` : ''}
 
     <div style="margin-top:18px">
 

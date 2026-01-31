@@ -75,42 +75,73 @@ setInterval(() => {
     // So we don't query countersStmt.getStale anymore.
 
     // 2. Find Stale Spectators (Ghost Sessions)
-    // Note: getStale uses ISO string for active_staff
     const staleSessions = activeStaffStmt.getStale.all({ cutoff: CUTOFF_ISO });
-
-    // Create unique set of user IDs to release
-    const toRelease = new Set([
-      ...staleSessions.map(s => s.user_id)
-    ]);
+    const toRelease = new Set([...staleSessions.map(s => s.user_id)]);
 
     if (toRelease.size > 0) {
-      console.log(`Cleaning up ${toRelease.size} stale users...`);
-      toRelease.forEach(userId => {
-        const result = releaseStaff(userId);
-        if (result && result.officeId) {
-          console.log(`Released Stale User: ${userId}`);
-
-          // Refresh Dashboard
-          const staffList = activeStaffStmt.getForOffice.all(result.officeId);
-          io.to(`office_${result.officeId}`).emit('staff_update', staffList);
-
-          // Notify Promotion
-          if (result.promotedUser) {
-            io.to(`user_${result.promotedUser.userId}`).emit('role_update', {
-              role: 'OPERATOR',
-              counter_number: result.promotedUser.counterNumber
-            });
-          }
-
-          // Recalculate queue
-          recalculateQueue(result.officeId);
-        }
-      });
+      toRelease.forEach(userId => releaseStaff(userId));
     }
   } catch (e) {
     console.error('Staff Cleanup Job Error:', e);
   }
-}, 5000); // Check every 5s
+}, 5000);
+
+// --- Strict No-Show Automation (Every 1 min) ---
+cron.schedule('* * * * *', () => {
+  // console.log('Running No-Show Check...');
+  try {
+    const offices = officesStmt.getAll.all();
+    const nowMs = Date.now();
+    const nowIso = new Date().toISOString();
+    const today = nowIso.split('T')[0];
+
+    offices.forEach(office => {
+      // Get active tokens for today
+      const tokens = tokensStmt.getForOffice.all(office.id)
+        .filter(t => t.status !== 'COMPLETED' && t.status !== 'cancelled' && t.status !== 'no-show' && t.status !== 'history');
+
+      tokens.forEach(t => {
+        // Requirement: If Customer has NOT arrived by ETA + 5 mins
+        if (t.expected_arrival_time && t.presence_status !== 'ARRIVED') {
+          const etaTime = new Date(t.expected_arrival_time).getTime();
+          const gracePeriod = 5 * 60 * 1000; // 5 minutes
+
+          if (nowMs > (etaTime + gracePeriod)) {
+            console.log(`[Auto No-Show] Token ${t.token_number} missed ETA ${t.expected_arrival_time} by >5m.`);
+
+            // Mark as NO-SHOW
+            tokensStmt.updateStatus.run({
+              id: t.id,
+              status: 'no-show',
+              allocation_time: t.allocation_time,
+              service_start_time: null,
+              expected_completion_time: null,
+              called_at: null,
+              completed_at: nowIso, // Terminated at now
+              now: nowIso,
+              eta: null,
+              assigned_counter: null,
+              called_by_counter: null,
+              appointment_date: t.appointment_date
+            });
+
+            // Email Notification
+            const recipientEmail = (t.user_contact && t.user_contact.includes('@')) ? t.user_contact : t.user_email;
+            if (recipientEmail) {
+              sendEmail(recipientEmail, 'Missed Appointment - GetEzi', emailTemplates.tokenNoShow(t.user_name, t.token_number, office.name));
+            }
+
+            // Trigger Refresh
+            recalculateQueue(office.id);
+            io.to(`office_${office.id}`).emit('token_update', { id: t.id, status: 'no-show' });
+          }
+        }
+      });
+    });
+  } catch (e) {
+    console.error('No-Show Cron Error:', e);
+  }
+});
 
 /* --- Email Helper --- */
 const transporter = nodemailer.createTransport({
@@ -475,58 +506,30 @@ const haversineDistance = (lat1, lon1, lat2, lon2) => {
   return Math.round(R * c); // returns meters
 };
 
-const calculateTravelETA = (distanceMeters, osrmSeconds = null) => {
-  // 1. OSRM Priority
-  if (osrmSeconds !== null && osrmSeconds !== undefined) {
-    const mins = Math.ceil(osrmSeconds / 60);
-    return Math.max(1, Math.min(mins, 180));
-  }
-
-  // 2. Fallback: 60km/h => 1000m = 1 minute
+const calculateTravelETA = (distanceMeters) => {
   if (!distanceMeters) return 1;
 
+  // Fallback: 60km/h => 1000m = 1 minute
+  // travelMinutes = (distanceKm / 60) * 60 = distanceKm
   const km = distanceMeters / 1000;
-  const mins = Math.ceil(km); // 1 km = 1 min
-  return Math.max(1, Math.min(mins, 180));
-}; // End calculateTravelETA
+  const mins = Math.ceil(km);
+  return Math.max(1, mins); // No upper cap mentioned by user, but keeping min 1 is safe
+};
 
-// Travel Time Calculation (OSRM with Strict Fallback)
+// Travel Time Calculation (Simple Constant Speed)
 const calculateTravelTime = async (originLat, originLng, destLat, destLng) => {
   if (!originLat || !originLng || !destLat || !destLng) return null;
 
-  let meters = 0;
-  let seconds = null;
-  let source = 'Haversine';
+  // 1. Calculate Distance (Haversine)
+  const meters = haversineDistance(originLat, originLng, destLat, destLng);
 
-  try {
-    // 1. Try OSRM
-    const url = `http://router.project-osrm.org/route/v1/driving/${originLng},${originLat};${destLng},${destLat}?overview=false`;
-    const response = await fetch(url);
-    if (response.ok) {
-      const data = await response.json();
-      if (data.code === 'Ok' && data.routes && data.routes.length > 0) {
-        const route = data.routes[0];
-        seconds = route.duration;
-        meters = route.distance; // OSRM distance in meters
-        source = 'OSRM';
-      }
-    }
-  } catch (error) {
-    console.error('OSRM Calculation Failed:', error.message);
-  }
-
-  // 2. Fallback Distance if OSRM failed
-  if (source === 'Haversine') {
-    meters = haversineDistance(originLat, originLng, destLat, destLng);
-  }
-
-  // 3. Strict ETA Logic
-  const minutes = calculateTravelETA(meters, seconds);
+  // 2. Calculate Travel Time (60 km/h)
+  const minutes = calculateTravelETA(meters);
 
   return {
     minutes,
     distanceKm: (meters / 1000).toFixed(1),
-    source
+    source: 'Haversine (Constant 60km/h)'
   };
 };
 
@@ -991,7 +994,7 @@ app.post('/api/offices/:id/book', async (req, res) => {
     let travelData = {};
 
     if (lat && lng && office.latitude && office.longitude) {
-      // Use new Helper
+      // Use new Helper (Constant Speed)
       travelData = await calculateTravelTime(lat, lng, office.latitude, office.longitude);
 
       if (travelData) {
@@ -1004,13 +1007,21 @@ app.post('/api/offices/:id/book', async (req, res) => {
         travelData.googleDirections = `https://www.google.com/maps/dir/?api=1&destination=${officeLat},${officeLng}&travelmode=driving`;
         travelData.googleView = `https://www.google.com/maps/search/?api=1&query=${officeLat},${officeLng}`;
         travelData.appleMaps = `http://maps.apple.com/?daddr=${officeLat},${officeLng}`;
-
-        // Optional: OSM Map
-        // travelData.osmMap = ...
       }
     } else if (clientTravelTime) {
-      travelTime = clientTravelTime; // Trust client from OSRM if no coords on server but client sent time
+      travelTime = clientTravelTime;
     }
+
+    // --- ETA Logic (User Req) ---
+    const avgWaitMinutes = 15;
+    const totalMinutes = avgWaitMinutes + travelTime;
+    const arrivalTime = new Date(Date.now() + totalMinutes * 60000).toISOString();
+
+    // Enrich travelData for Email
+    travelData.avgWaitMinutes = avgWaitMinutes;
+    travelData.travelTime = travelTime;
+    travelData.totalMinutes = totalMinutes;
+    travelData.arrivalTime = arrivalTime;
 
     const token = {
       id: uuidv4(),
@@ -1031,6 +1042,15 @@ app.post('/api/offices/:id/book', async (req, res) => {
 
     db.transaction(() => {
       tokensStmt.insert.run(token);
+      // Persist ETA for No-Show Logic
+      if (travelData.arrivalTime) {
+        tokensStmt.updatePrediction.run({
+          id: token.id,
+          score: 1.0, // Default confident score
+          status: 'FUTURE', // Initial prediction status
+          expected_time: travelData.arrivalTime
+        });
+      }
     })();
 
     // Only Recalculate if TODAY
@@ -1121,37 +1141,36 @@ app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, r
       return res.status(400).json({ error: `Counter ${cNum} is already serving Token #${busyToken.token_number}. Complete it first.` });
     }
 
-    // Find Logic
-    const allocated = allTokens.filter(t => t.status === 'ALLOCATED');
+    // Find Logic - STRICT (User Req 5)
+    // 1. Filter by Date (Today Only)
+    const today = new Date().toISOString().split('T')[0];
+    const todaysTokens = allTokens.filter(t => !t.appointment_date || t.appointment_date === today);
+
+    const allocated = todaysTokens.filter(t => t.status === 'ALLOCATED');
     let candidates = allocated.filter(t => t.assigned_counter === cNum);
 
     console.log(`Debug Call: cNum=${cNum}, Allocated=${allocated.length}, Candidates(Self)=${candidates.length}`);
-    allocated.forEach(t => console.log(`Token ${t.token_number}: Status=${t.status}, Assigned=${t.assigned_counter}`));
+
+    // Filter ONLY Arrived (Requirement 3 & 5)
+    candidates = candidates.filter(t => t.presence_status === 'ARRIVED');
 
     if (candidates.length === 0) {
-      // Fallback: Pick from Global Pool if any unassigned exists (Legacy support)
-      // Or if we want to "steal" from biggest queue? (Auto-balancing)
-      // Requirement says: "Auto-swap them" if no-show.
-      // For now: Just pick unassigned if any.
-      const unassigned = allocated.filter(t => !t.assigned_counter);
-      if (unassigned.length > 0) {
-        console.log(`Debug Call: Picked ${unassigned.length} unassigned tokens.`);
-        candidates = unassigned;
-      } else {
-        // Debug: Check WAIT tokens?
-        const wait = allTokens.filter(t => t.status === 'WAIT');
-        console.log(`Debug Call: No candidates. WAIT tokens count: ${wait.length}`);
+      // Logic: If I have no arrived candidates assigned to me,
+      // Check if there are unassigned ARRIVED tokens I can pick up.
+      const unassignedArrived = allocated.filter(t => !t.assigned_counter && t.presence_status === 'ARRIVED');
+
+      if (unassignedArrived.length > 0) {
+        candidates = unassignedArrived;
       }
     }
 
     let nextToken = null;
     if (candidates.length > 0) {
-      const arrived = candidates.filter(t => t.presence_status === 'ARRIVED');
-      if (arrived.length > 0) nextToken = arrived[0];
-      else {
-        candidates.sort((a, b) => (b.arrival_score || 0) - (a.arrival_score || 0));
-        nextToken = candidates[0];
-      }
+      // Pick first arrived (FIFO by created_at usually, or just first in list)
+      // tokensStmt.getForOffice orders by created_at ASC
+      nextToken = candidates[0];
+    } else {
+      return res.status(404).json({ error: 'No arrived customers waiting for service.' });
     }
 
     if (!nextToken) {
