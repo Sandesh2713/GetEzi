@@ -514,10 +514,10 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                 if (onOfficeSelect) onOfficeSelect(off.id);
                                             }}
                                             className={`
-                                                w-full flex justify-between items-center p-4 rounded-xl border transition-all duration-200 group relative bg-white cursor-pointer select-none
+                                                w-full flex justify-between items-center p-4 rounded-xl border-2 transition-all duration-200 group relative bg-white cursor-pointer select-none
                                                 ${isSelected
-                                                    ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500 shadow-sm'
-                                                    : 'border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300 hover:-translate-y-0.5'
+                                                    ? 'border-blue-500 bg-blue-50/30 ring-2 ring-blue-500/20 shadow-[0_8px_30px_rgba(59,130,246,0.25)]'
+                                                    : 'border-slate-200 shadow-[0_4px_12px_rgba(0,0,0,0.08)] hover:shadow-[0_12px_30px_rgba(0,0,0,0.15)] hover:border-blue-300 hover:-translate-y-1'
                                                 }
                                             `}
                                         >
