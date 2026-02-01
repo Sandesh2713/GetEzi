@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 
 export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
+    const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
     const [showAddStaffModal, setShowAddStaffModal] = useState(false);
     const [activeTab, setActiveTab] = useState('overview');
 
@@ -46,7 +47,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
 
         try {
             const token = sessionStorage.getItem('token');
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/active-counters`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/active-counters`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -100,7 +101,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
 
         try {
             const token = sessionStorage.getItem('token');
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/shutdown`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/shutdown`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -148,7 +149,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             fetchHolidays();
 
             // Connect Socket
-            const socket = io('http://localhost:4000');
+            const socket = io(API_BASE);
             socketRef.current = socket;
 
             socket.on('connect', () => {
@@ -168,7 +169,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
     const fetchHolidays = async () => {
         if (!activeOffice) return;
         try {
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/holidays`);
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/holidays`);
             const data = await res.json();
             if (Array.isArray(data)) setHolidays(data);
         } catch (e) { console.error(e); }
@@ -178,7 +179,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         if (!newHoliday.date) return alert('Date is required');
         try {
             const token = sessionStorage.getItem('token');
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/holidays`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/holidays`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                 body: JSON.stringify(newHoliday)
@@ -198,7 +199,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         if (!window.confirm('Delete this holiday?')) return;
         try {
             const token = sessionStorage.getItem('token');
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/holidays/${id}`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/holidays/${id}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -210,7 +211,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         if (!activeOffice) return;
         try {
             const token = sessionStorage.getItem('token');
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/staff`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/staff`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (handleAuthError(res)) return;
@@ -225,7 +226,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         if (!window.confirm("PERMANENT DELETE: This will remove the staff member and their login credentials forever. Are you sure?")) return;
         try {
             const token = sessionStorage.getItem('token');
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/staff/${staffId}`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/staff/${staffId}`, {
                 method: 'DELETE',
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -247,13 +248,13 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             let res;
 
             if (editStaffMode) {
-                res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/staff/${editStaffMode.id}`, {
+                res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/staff/${editStaffMode.id}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                     body: JSON.stringify(newStaffData)
                 });
             } else {
-                res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/staff`, {
+                res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/staff`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
                     body: JSON.stringify(newStaffData)
@@ -293,7 +294,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             console.log('User:', user);
             console.log('Timings data:', timings);
 
-            const res = await fetch(`http://localhost:4000/api/offices/${activeOffice.id}/config`, {
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/config`, {
                 method: 'PATCH',
                 headers: {
                     'Content-Type': 'application/json',
