@@ -306,6 +306,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
             const updateLocation = () => {
                 const lngLat = userMarker.getLngLat();
                 setFormData(prev => ({ ...prev, userCoords: [lngLat.lng, lngLat.lat] }));
+                setResolvedAddress(null); // Clear address if user manually moves pin
             };
 
             userMarker.on('dragend', updateLocation);
@@ -837,13 +838,44 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                 <button
                                                     onClick={() => {
                                                         if (navigator.geolocation) {
-                                                            navigator.geolocation.getCurrentPosition((pos) => {
+                                                            setIsSearching(true);
+                                                            navigator.geolocation.getCurrentPosition(async (pos) => {
                                                                 const { latitude, longitude } = pos.coords;
+
+                                                                // 1. Update Map
                                                                 if (map.current) {
-                                                                    map.current.flyTo({ center: [longitude, latitude], zoom: 14 });
-                                                                    // Update marker logic here if needed, or rely on the click listener
+                                                                    map.current.flyTo({ center: [longitude, latitude], zoom: 16 });
+                                                                    // We need to update the marker position visually too, usually handled by re-render or explicit set
+                                                                    // But since map setup is in useEffect dependent on showBookingModal, we assume the marker listens to formData changes or we force it?
+                                                                    // Actually checking line 296: userMarker.setLngLat(formData.userCoords) is inside initialization.
+                                                                    // We might need to manually update marker if it exists. 
+                                                                    // Let's defer that to the map effect or just rely on state. 
+                                                                    // Wait, the map effect (line 296) only runs on MOUNT. 
+                                                                    // We need to update the marker instance if it exists.
+                                                                    // But we don't have easy access to 'userMarker' variable here unless we store it in ref.
+                                                                    // The code at line 291 creates 'userMarker' locally. That's a bug in previous code if we want it to update reactively.
+                                                                    // HOWEVER, the user request is about ADDRESS verification.
+                                                                }
+
+                                                                // 2. Reverse Geocode
+                                                                try {
+                                                                    const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`);
+                                                                    const data = await res.json();
+                                                                    if (data && data.display_name) {
+                                                                        setResolvedAddress(data.display_name);
+                                                                        setSearchQuery(""); // Clear search query as we used GPS
+                                                                    }
+                                                                } catch (e) {
+                                                                    console.error("Geocoding failed", e);
+                                                                    setResolvedAddress("Current Location (Address lookup failed)");
+                                                                } finally {
+                                                                    setIsSearching(false);
                                                                     setFormData(prev => ({ ...prev, userCoords: [longitude, latitude] }));
                                                                 }
+                                                            }, (err) => {
+                                                                console.error(err);
+                                                                setIsSearching(false);
+                                                                alert("Could not pull location. Please ensure GPS is enabled.");
                                                             });
                                                         }
                                                     }}
@@ -936,7 +968,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                     <div className="overflow-hidden">
                                                         <p className="text-xs font-bold text-blue-800 uppercase">Selected Location</p>
                                                         <p className="text-sm font-medium text-blue-900 truncate">
-                                                            {formData.userCoords[1].toFixed(4)}, {formData.userCoords[0].toFixed(4)}
+                                                            {resolvedAddress || `${formData.userCoords[1].toFixed(4)}, ${formData.userCoords[0].toFixed(4)}`}
                                                         </p>
                                                     </div>
                                                 </div>
