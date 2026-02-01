@@ -234,6 +234,11 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
     };
 
     const handleConfirmBooking = () => {
+        // Validate Location (Step 4)
+        if (!formData.userCoords) {
+            return alert('Please select a location on the map or search for an address.');
+        }
+
         onBook({
             customerName: formData.fullName,
             customerEmail: formData.email,
@@ -624,7 +629,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                     <span className="font-medium">
                                                         {token.status === 'CALLED' ? 'Serving Now' :
                                                             token.status === 'ALLOCATED' ? 'Head to Counter' :
-                                                                `Est. Wait: ${Math.round((token.eta_minutes || 15) + (token.travel_time_minutes || 0))} mins`}
+                                                                `ETA: ${Math.round(token.eta_minutes || 0)} mins`}
                                                     </span>
                                                 </div>
                                                 {token.service_start_time && (

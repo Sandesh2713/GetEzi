@@ -816,6 +816,16 @@ const recalculateQueue = async (officeId) => {
   // --- ETA CALCULATION (Dynamic) ---
   const allTokensWithUpdates = tokensStmt.getForOffice.all(officeId);
   const processedTokens = await EtaService.processQueue(office, allTokensWithUpdates);
+
+  // PERSIST DYNAMIC ETA TO DB
+  // This ensures polling clients get the fresh value
+  const updateEtaStmt = db.prepare('UPDATE tokens SET eta_minutes = @eta WHERE id = @id');
+  processedTokens.forEach(t => {
+    if (typeof t.eta === 'number') {
+      updateEtaStmt.run({ eta: t.eta, id: t.id });
+    }
+  });
+
   const finalTokens = enrichTokens(processedTokens);
 
   // Fetch & Enrich Active Staff
@@ -992,17 +1002,36 @@ app.post('/api/offices/:id/book', async (req, res) => {
       if (travelData) travelTime = travelData.minutes;
     }
 
-    // --- ETA LOGIC (STRICT) ---
     let eta = null;
     let etaMinutes = null;
+    let queueWaitMinutes = 0;
 
     if (isActive) {
-      // Active Ticket: Calculate ETA
-      // formula: totalTime = averageWaitMinutes + travelTime
-      const avgWait = office.avg_service_minutes || 15; // Simple approximation per user request "averageWaitMinutes" (usually derived from Q length but constant is safer/predictable)
-      const totalMinutes = avgWait + travelTime;
-      etaMinutes = totalMinutes;
-      eta = new Date(Date.now() + totalMinutes * 60000).toISOString();
+      // Active Ticket: Calculate ETA based on Queue Length
+      // 1. Get number of people ahead (Waiting + Allocated)
+      const queueCountStmt = db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM tokens 
+        WHERE office_id = ? 
+        AND status IN ('WAIT', 'ALLOCATED') 
+        AND (appointment_date = ? OR appointment_date IS NULL)
+      `);
+      const qResult = queueCountStmt.get(id, dateStr);
+      const peopleAhead = qResult ? qResult.count : 0;
+
+      // 2. Calculate Queue Wait Time
+      const serviceTime = office.avg_service_minutes || 15;
+      const activeCounters = office.active_counters || 1;
+      // Simple throughput estimation:
+      queueWaitMinutes = Math.ceil((peopleAhead * serviceTime) / activeCounters);
+
+      // 3. User ETA = Max(QueueWait, TravelTime)
+      // If Queue is 60m and Travel is 10m -> Service in 60m.
+      // If Queue is 5m and Travel is 20m -> Service in 20m (Immediate upon arrival).
+      const finalWaitMinutes = Math.max(queueWaitMinutes, travelTime);
+
+      etaMinutes = finalWaitMinutes;
+      eta = new Date(Date.now() + finalWaitMinutes * 60000).toISOString();
     }
     // Future Ticket: ETA is null.
 
@@ -1054,13 +1083,34 @@ app.post('/api/offices/:id/book', async (req, res) => {
       )
     `).run(token);
 
-    // Email Notification
+    // --- Email Notification ---
     if (customerEmail) {
       const emailSubject = isActive ? 'Booking Confirmed - GetEzi' : 'Appointment Scheduled - GetEzi';
-      const emailTemplate = isActive
-        ? emailTemplates.bookingConfirmation(customerName, token.token_number, office.name, travelData?.googleDirections || '', eta)
-        : emailTemplates.bookingConfirmation(customerName, token.token_number, office.name, '', null).replace('ETA:', 'Date:').replace(eta, dateStr);
-      // Needs proper future template, but reusing for safety
+
+      // Construct Rich Travel Data for Email
+      let emailTravelData = null;
+      if (isActive && travelData) {
+        emailTravelData = {
+          travelTime: travelTime,
+          distanceKm: travelData.distance || 0,
+          avgWaitMinutes: typeof queueWaitMinutes !== 'undefined' ? queueWaitMinutes : 0,
+          totalMinutes: etaMinutes,
+          arrivalTime: eta,
+          googleDirections: `https://www.google.com/maps/dir/?api=1&origin=${lat},${lng}&destination=${office.latitude},${office.longitude}`,
+          googleView: `https://www.google.com/maps/search/?api=1&query=${office.latitude},${office.longitude}`
+        };
+      }
+
+      // Args: (name, tokenNumber, officeName, address, time, serviceEta, travelData)
+      const emailTemplate = emailTemplates.bookingConfirmation(
+        customerName,
+        token.token_number,
+        office.name,
+        office.address || `Lat: ${office.latitude}, Lng: ${office.longitude}`,
+        dateStr,
+        eta,
+        emailTravelData
+      );
 
       sendEmail(customerEmail, emailSubject, emailTemplate);
     }
