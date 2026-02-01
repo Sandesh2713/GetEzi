@@ -108,7 +108,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
     }, [user]);
 
     // --- FETCH USER TOKENS (ALL OFFICES) ---
-    const [userTokens, setUserTokens] = useState([]);
+    const [userTokens, setUserTokens] = useState({ active: [], upcoming: [] });
 
     // Initial fetch + Periodic Poll (fallback for socket)
     useEffect(() => {
@@ -116,12 +116,17 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
         const fetchUserTokens = async () => {
             try {
+                // Use sessionStorage as AuthContext uses it
+                const token = sessionStorage.getItem('token');
                 const res = await fetch(`${API_BASE}/api/users/${user.id}/tokens`, {
-                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                    headers: { 'Authorization': `Bearer ${token}` }
                 });
                 if (res.ok) {
                     const data = await res.json();
+                    // Backend now returns { active: [], upcoming: [] }
                     setUserTokens(data);
+                } else {
+                    console.error("Fetch failed", res.status);
                 }
             } catch (e) {
                 console.error("Failed to fetch user tokens", e);
@@ -131,17 +136,11 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         fetchUserTokens();
         const interval = setInterval(fetchUserTokens, 10000); // refresh every 10s
         return () => clearInterval(interval);
-    }, [user?.id, tokens]); // Re-fetch if 'tokens' prop update triggers a refresh hint (though tokens prop is office-specific)
+    }, [user?.id, tokens]);
 
-    const activeTokens = useMemo(() => {
-        if (!userTokens) return [];
-        return userTokens.filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
-    }, [userTokens]);
-
-    const futureTokens = useMemo(() => {
-        if (!userTokens) return [];
-        return userTokens.filter(t => t.status === 'FUTURE');
-    }, [userTokens]);
+    // Simple Accessors matching new structure
+    const activeTokens = userTokens.active || [];
+    const futureTokens = userTokens.upcoming || [];
 
     // Process real data
     const currentOffice = availableOffices.find(o => o.id === selectedOffice) || office || {};
@@ -594,7 +593,9 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
 
                         {/* Recent Bookings */}
                         <div>
-                            <h3 className="text-lg font-bold text-slate-800 mb-4 px-1">Your Active Tickets</h3>
+                            <h3 className="text-lg font-bold text-slate-800 mb-4 px-1">Active Tickets (Today)</h3>
+
+
                             {activeTokens.length > 0 ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     {activeTokens.map((token) => (
@@ -623,7 +624,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                     <span className="font-medium">
                                                         {token.status === 'CALLED' ? 'Serving Now' :
                                                             token.status === 'ALLOCATED' ? 'Head to Counter' :
-                                                                `Est. Wait: ${token.eta || 15} mins`}
+                                                                `Est. Wait: ${Math.round((token.eta_minutes || 15) + (token.travel_time_minutes || 0))} mins`}
                                                     </span>
                                                 </div>
                                                 {token.service_start_time && (
@@ -641,7 +642,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                             </div>
 
                                             {/* Action Buttons */}
-                                            {token.status === 'ALLOCATED' && token.presence_status !== 'ARRIVED' && (
+                                            {['ALLOCATED', 'WAIT'].includes(token.status) && token.presence_status !== 'ARRIVED' && (
                                                 <button
                                                     onClick={() => onUpdateToken(token.id, 'arrive')}
                                                     className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
@@ -676,7 +677,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                             <div>
                                 <h3 className="text-lg font-bold text-slate-800 mb-4 px-1 flex items-center gap-2">
                                     <Calendar className="text-blue-600" size={20} />
-                                    Upcoming Appointments
+                                    Upcoming Tickets
                                 </h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     {futureTokens.map((token) => (
@@ -700,7 +701,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                 </div>
                                                 <div className="flex items-center gap-2 text-xs text-slate-500">
                                                     <MapPin size={14} className="text-slate-400" />
-                                                    <span>{currentOffice?.name || 'Office'}</span>
+                                                    <span>{token.office_name || currentOffice?.name || 'Office'}</span>
                                                 </div>
                                             </div>
                                         </div>

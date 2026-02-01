@@ -2534,22 +2534,57 @@ function SuperAdminDashboard({ user, office, onLogout, onNavigate }) {
 }
 
 // --- NEW: Staff Dashboard ---
-function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout }) {
+function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateToken, onLogout }) {
   const isActive = user.assigned_counter <= (office?.active_counters || 1);
   const myCounter = user.assigned_counter;
 
-  // Merge real tokens with test tokens for UI testing
-  // Filter out duplicate test tokens if real tokens have same ID
-  const allTokens = tokens || [];
+  // State for Queue Data
+  const [queueData, setQueueData] = useState({ upNext: [], future: [] });
 
-  // Filter tokens for MY counter
-  const myTokens = allTokens.filter(t => t.assigned_counter === myCounter);
-  const currentToken = myTokens.find(t => t.status === 'CALLED');
-  const myQueue = myTokens.filter(t => ['ALLOCATED', 'WAIT'].includes(t.status));
-  const generalQueue = allTokens.filter(t => t.status === 'WAIT' && !t.assigned_counter);
-  const completedCount = allTokens.filter(t => t.assigned_counter === myCounter && ['COMPLETED'].includes(t.status)).length;
-  const noShowCount = allTokens.filter(t => t.assigned_counter === myCounter && ['no-show'].includes(t.status)).length;
-  const futureBookings = allTokens.filter(t => t.status === 'FUTURE');
+  // Fetch Queue Function
+  const fetchQueue = async () => {
+    if (!office?.id) return;
+    try {
+      const token = sessionStorage.getItem('token');
+      const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+      const res = await fetch(`${API_BASE}/api/offices/${office.id}/staff-queue`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setQueueData(data);
+      }
+    } catch (e) { console.error("Staff Queue Fetch Error", e); }
+  };
+
+  // Initial Poll + Socket Sync
+  useEffect(() => {
+    fetchQueue();
+    const interval = setInterval(fetchQueue, 10000); // 10s sync
+    return () => clearInterval(interval);
+  }, [office?.id]);
+
+  // Sync "Active" (upNext) from Socket Props if available (for real-time latency)
+  // socketTokens is passed from App.jsx which receives 'active' tokens from socket.
+  // We can merge or override. Socket is faster.
+  useEffect(() => {
+    if (socketTokens && socketTokens.length > 0) {
+      // socketTokens are essentially the "Active" list
+      // We update upNext, keep future as is
+      setQueueData(prev => ({ ...prev, upNext: socketTokens }));
+    }
+  }, [socketTokens]);
+
+  const allTokens = [...queueData.upNext, ...queueData.future];
+
+  // Derive Views
+  const myTokens = queueData.upNext.filter(t => t.assigned_counter === myCounter); // Assigned to me
+  const currentToken = allTokens.find(t => t.status === 'CALLED' && t.called_by_counter === myCounter); // My Active
+  const myQueue = myTokens.filter(t => ['ALLOCATED', 'WAIT'].includes(t.status)); // Waiting for me
+  const generalQueue = queueData.upNext.filter(t => t.status === 'WAIT' && !t.assigned_counter); // Global Wait
+  const completedCount = allTokens.filter(t => ['COMPLETED'].includes(t.status)).length; // Simplified stats
+  const noShowCount = allTokens.filter(t => ['no-show'].includes(t.status)).length;
+  const futureBookings = queueData.future;
 
   // Closed Check
   const todayDate = new Date();

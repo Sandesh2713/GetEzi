@@ -473,6 +473,22 @@ const getActiveStaffCount = (officeId) => {
   }).length;
 };
 
+const getNextTokenNumber = (officeId, dateStr) => {
+  // If dateStr is not provided, default to today
+  let checkDate = dateStr;
+  if (!checkDate) {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    checkDate = `${y}-${m}-${d}`;
+  }
+
+  const stmt = db.prepare('SELECT MAX(token_number) as maxNum FROM tokens WHERE office_id = ? AND appointment_date = ?');
+  const result = stmt.get(officeId, checkDate);
+  return (result.maxNum || 0) + 1;
+};
+
 const enrichTokens = (tokens) => {
   const now = Date.now();
   return tokens.map(t => {
@@ -501,7 +517,7 @@ const enrichTokens = (tokens) => {
 
 /* --- Helpers --- */
 const haversineDistance = (lat1, lon1, lat2, lon2) => {
-  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return 0;
   const toRad = x => x * Math.PI / 180;
   const R = 6371e3; // meters
   const dLat = toRad(lat2 - lat1);
@@ -525,10 +541,15 @@ const calculateTravelETA = (distanceMeters) => {
 
 // Travel Time Calculation (Simple Constant Speed)
 const calculateTravelTime = async (originLat, originLng, destLat, destLng) => {
-  if (!originLat || !originLng || !destLat || !destLng) return null;
+  console.log(`[DEBUG] Travel Calc: Origin(${originLat},${originLng}) -> Dest(${destLat},${destLng})`);
+  if (originLat == null || originLng == null || destLat == null || destLng == null) {
+    console.log('[DEBUG] Missing Coordinates for Travel Calc');
+    return null;
+  }
 
   // 1. Calculate Distance (Haversine)
   const meters = haversineDistance(originLat, originLng, destLat, destLng);
+  console.log(`[DEBUG] Distance: ${meters} meters`);
 
   // 2. Calculate Travel Time (60 km/h)
   const minutes = calculateTravelETA(meters);
@@ -912,142 +933,149 @@ app.delete('/api/offices/:id/holidays/:holidayId', authenticateToken, requireOff
 // Create Token (Book)
 app.post('/api/offices/:id/book', async (req, res) => {
   try {
-    const { id } = req.params;
+    const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
     const office = ensureOffice(id);
     const { customerName, customerContact, customerEmail, lat, lng, userId, serviceType, customerAddress, travelTime: clientTravelTime, appointmentDate } = req.body;
 
-    // --- 1. APPOINTMENT DATE VALIDATION ---
-    // If appointmentDate is provided, validate it. If not, assumed TODAY (Wait List).
-    // Note: If today is holiday/closed, can we join Wait List? "User can select custom date".
-    // If no date provided, default to TODAY.
+    // --- 1. APPOINTMENT DATE VALIDATION (STRICT) ---
+    // User requires: IF date == today: ACTIVE (WAIT). IF date > today: UPCOMING (FUTURE).
 
-    // Normalize Date
-    let dateStr = appointmentDate || new Date().toISOString().split('T')[0];
-    const serverDate = new Date().toISOString().split('T')[0];
-    const isFuture = dateStr > serverDate;
+    // Normalize Date to Local YYYY-MM-DD
+    let dateStr = appointmentDate;
+    if (!dateStr) {
+      // Default to TODAY if not provided
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      dateStr = `${year}-${month}-${day}`;
+    }
 
-    console.log(`[DEBUG] Token Create: DateStr=${dateStr}, ServerDate(UTC)=${serverDate}, isFuture=${isFuture}`);
+    const now = new Date();
+    const serverYear = now.getFullYear();
+    const serverMonth = String(now.getMonth() + 1).padStart(2, '0');
+    const serverDay = String(now.getDate()).padStart(2, '0');
+    const todayStr = `${serverYear}-${serverMonth}-${serverDay}`;
 
-    // Status Check (Only if Today)
-    if (!isFuture) {
+    const isFuture = dateStr > todayStr;
+    const isActive = dateStr === todayStr;
+
+    console.log(`[DEBUG] Booking: Date=${dateStr}, Today=${todayStr}, Future=${isFuture}`);
+
+    // Constraints Checks
+    // 1. Holiday
+    if (isHoliday(id, dateStr)) return res.status(400).json({ error: 'Office is closed on this date (Holiday).' });
+
+    // 2. Closed Day
+    if (isClosedDay(office, dateStr)) return res.status(400).json({ error: 'Office is closed on this day of the week.' });
+
+    // 3. Status Check (If Active)
+    if (isActive) {
       const status = OfficeStatusEngine.getStatus(office);
-      if (status.status === 'CLOSED') {
-        return res.status(400).json({ error: status.message });
-      }
+      if (status.status === 'CLOSED') return res.status(400).json({ error: status.message });
     }
 
-    // Holiday Check
-    if (isHoliday(id, dateStr)) {
-      return res.status(400).json({ error: 'Office is closed on this date (Holiday).' });
-    }
-
-    // Working Day Check
-    if (isClosedDay(office, dateStr)) {
-      return res.status(400).json({ error: 'Office is closed on this day of the week.' });
-    }
-
-    // Capacity Check
-    if (isCapacityFull(id, dateStr, office.daily_capacity)) {
-      return res.status(400).json({ error: 'Daily capacity reached for this date.' });
-    }
+    // 4. Capacity
+    if (isCapacityFull(id, dateStr, office.daily_capacity)) return res.status(400).json({ error: 'Daily capacity reached.' });
 
     if (!customerName || !customerEmail) return res.status(400).json({ error: 'Name and Email are required' });
     if ((!lat || !lng) && !customerAddress) return res.status(400).json({ error: 'Valid Location required' });
 
+    // --- TRAVEL TIME CALCULATION ---
+    // Calculated for ALL tickets to save data, but used differently.
+    // User Rule: "ETA must be calculated ONLY for today's tickets."
+    let travelTime = 1;
+    let travelData = null;
 
-    // Calc Travel Time & Map Links
-    let travelTime = 1; // Default minimum
-    let travelData = {};
-
-    if (lat && lng && office.latitude && office.longitude) {
-      // Use new Helper (Constant Speed)
+    if (lat != null && lng != null && office.latitude != null && office.longitude != null) {
       travelData = await calculateTravelTime(lat, lng, office.latitude, office.longitude);
-
-      if (travelData) {
-        travelTime = travelData.minutes;
-
-        // Generate Map Links
-        const officeLat = office.latitude;
-        const officeLng = office.longitude;
-
-        travelData.googleDirections = `https://www.google.com/maps/dir/?api=1&destination=${officeLat},${officeLng}&travelmode=driving`;
-        travelData.googleView = `https://www.google.com/maps/search/?api=1&query=${officeLat},${officeLng}`;
-        travelData.appleMaps = `http://maps.apple.com/?daddr=${officeLat},${officeLng}`;
-      }
-    } else if (clientTravelTime) {
-      travelTime = clientTravelTime;
+      if (travelData) travelTime = travelData.minutes;
     }
 
-    // --- ETA Logic (User Req) ---
-    const avgWaitMinutes = 15;
-    const totalMinutes = avgWaitMinutes + travelTime;
-    const arrivalTime = new Date(Date.now() + totalMinutes * 60000).toISOString();
+    // --- ETA LOGIC (STRICT) ---
+    let eta = null;
+    let etaMinutes = null;
 
-    // Enrich travelData for Email
-    travelData.avgWaitMinutes = avgWaitMinutes;
-    travelData.travelTime = travelTime;
-    travelData.totalMinutes = totalMinutes;
-    travelData.arrivalTime = arrivalTime;
+    if (isActive) {
+      // Active Ticket: Calculate ETA
+      // formula: totalTime = averageWaitMinutes + travelTime
+      const avgWait = office.avg_service_minutes || 15; // Simple approximation per user request "averageWaitMinutes" (usually derived from Q length but constant is safer/predictable)
+      const totalMinutes = avgWait + travelTime;
+      etaMinutes = totalMinutes;
+      eta = new Date(Date.now() + totalMinutes * 60000).toISOString();
+    }
+    // Future Ticket: ETA is null.
+
+    // --- INSERT TOKEN ---
+    // Status: WAIT if Active, FUTURE if Future
+    const initialStatus = isActive ? 'WAIT' : 'FUTURE';
 
     const token = {
       id: uuidv4(),
       office_id: id,
-      user_id: userId || null, // Ensure valid value
+      user_id: userId || null,
       user_name: customerName,
-      user_contact: customerContact,
-      token_number: (tokensStmt.getMaxTokenNum.get(id).maxNum || 0) + 1,
+      user_email: customerEmail, // New Schema field? Or map to existing?
+      user_contact: customerContact || customerEmail, // Fallback
+      token_number: getNextTokenNumber(id, dateStr), // Deterministic Number
+      status: initialStatus,
       created_at: toIso(),
-      lat: lat || null,
-      lng: lng || null,
+      service_type: serviceType || office.service_type || 'General',
+      appointment_date: dateStr,
+
+      // Location / Map
+      latitude: lat || null,
+      longitude: lng || null,
+      user_address: customerAddress || '',
+
+      // Modifiers
+      is_priority: 0,
+      note: req.body.note || '',
+
+      // Time Data
+      eta_minutes: etaMinutes, // Null if future
       travel_time_minutes: travelTime,
-      service_type: serviceType || 'General',
-      customer_address: customerAddress || '',
-      appointment_date: dateStr, // INSERT THIS
-      status: isFuture ? 'FUTURE' : 'WAIT'
+      expected_completion_time: eta, // We use this field for ETA usually
+
+      // Strict Arrival
+      presence_status: 'ABSENT', // Default
+      arrival_confirmed_at: null
     };
 
-    db.transaction(() => {
-      tokensStmt.insert.run(token);
-      // Persist ETA for No-Show Logic
-      if (travelData.arrivalTime) {
-        tokensStmt.updatePrediction.run({
-          id: token.id,
-          score: 1.0, // Default confident score
-          status: 'FUTURE', // Initial prediction status
-          expected_time: travelData.arrivalTime
-        });
-      }
-    })();
-
-    // Only Recalculate if TODAY
-    const today = new Date().toISOString().split('T')[0];
-    let serviceEta = null;
-
-    if (dateStr === today) {
-      try {
-        const updatedTokens = await recalculateQueue(id);
-        const myEnrichedToken = updatedTokens.find(t => t.id === token.id);
-        if (myEnrichedToken && myEnrichedToken.expected_arrival) {
-          serviceEta = myEnrichedToken.expected_arrival;
-        }
-      } catch (calcErr) {
-        console.error('Recalculate Queue Failed (Non-fatal):', calcErr);
-      }
-    }
+    db.prepare(`
+      INSERT INTO tokens (
+        id, office_id, user_id, user_name, user_contact, token_number, status, created_at, 
+        service_type, appointment_date, lat, lng, customer_address, note,
+        eta_minutes, travel_time_minutes, expected_completion_time, presence_status
+      ) VALUES (
+        @id, @office_id, @user_id, @user_name, @user_contact, @token_number, @status, @created_at,
+        @service_type, @appointment_date, @latitude, @longitude, @user_address, @note,
+        @eta_minutes, @travel_time_minutes, @expected_completion_time, @presence_status
+      )
+    `).run(token);
 
     // Email Notification
-    const recipientEmail = (customerContact && customerContact.includes('@')) ? customerContact : (userId ? usersStmt.getById.get(userId)?.email : null);
+    if (customerEmail) {
+      const emailSubject = isActive ? 'Booking Confirmed - GetEzi' : 'Appointment Scheduled - GetEzi';
+      const emailTemplate = isActive
+        ? emailTemplates.bookingConfirmation(customerName, token.token_number, office.name, travelData?.googleDirections || '', eta)
+        : emailTemplates.bookingConfirmation(customerName, token.token_number, office.name, '', null).replace('ETA:', 'Date:').replace(eta, dateStr);
+      // Needs proper future template, but reusing for safety
 
-    if (recipientEmail) {
-      sendEmail(recipientEmail, 'Booking Confirmed - GetEzi', emailTemplates.bookingConfirmation(
-        token.user_name,
-        token.token_number,
-        office.name,
-        office.address || '',
-        token.created_at,
-        serviceEta,
-        travelData // Pass new data
-      ));
+      sendEmail(customerEmail, emailSubject, emailTemplate);
+    }
+
+    // Trigger Update
+    // If Active, update Queue. If Future, update Future list (if we pushed that via socket, but usually on-demand).
+    if (isActive) {
+      recalculateQueue(id);
+
+      // Notify Admin/Staff
+      io.to(`office_${id}`).emit('queue_update', {
+        officeId: id,
+        type: 'NEW_BOOKING',
+        token
+      });
     }
 
     res.status(201).json(token);
@@ -1109,8 +1137,13 @@ app.post('/api/offices/:id/counters/:counterId/call', authenticateToken, (req, r
 
     // Find Logic - STRICT GLOBAL QUEUE (User Req: Date/Time)
     // 1. Filter by Date (Today Only)
-    // FIX: Use Local Date (en-CA gives YYYY-MM-DD) to match User's 'Today' context
-    const today = new Date().toLocaleDateString('en-CA');
+    // FIX: Use Consistent Local Date
+    const nowCtx = new Date();
+    const serverYear = nowCtx.getFullYear();
+    const serverMonth = String(nowCtx.getMonth() + 1).padStart(2, '0');
+    const serverDay = String(nowCtx.getDate()).padStart(2, '0');
+    const today = `${serverYear}-${serverMonth}-${serverDay}`;
+
     // Also include tokens with appointment_date matching today OR null (walk-ins)
     const todaysTokens = allTokens.filter(t => !t.appointment_date || t.appointment_date === today);
 
@@ -1315,7 +1348,7 @@ app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// No-Show
+// No-Show (Swap with next token logic)
 app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
   const token = tokensStmt.getById.get(req.params.id);
   if (!token) return res.status(404).json({ error: 'Not found' });
@@ -1326,47 +1359,101 @@ app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
     return res.status(403).json({ error: 'Access Denied: Only staff or office owners can mark no-show.' });
   }
 
-  db.transaction(() => {
-    tokensStmt.updateStatus.run({
-      id: token.id,
-      status: 'no-show',
-      completed_at: toIso(),
-      called_at: token.called_at,
-      allocation_time: token.allocation_time,
-      service_start_time: null,
-      expected_completion_time: null,
-      now: toIso(),
-      eta: null,
-      assigned_counter: null,
-      called_by_counter: null,
-      appointment_date: null
-    });
+  try {
+    const swapResult = db.transaction(() => {
+      // 1. Find the next eligible token (T2)
+      // Filter: Same office, Status WAIT/ALLOCATED, Not T1
+      // Sort: CreatedAt (FIFO)
+      const allTokens = tokensStmt.getForOffice.all(token.office_id);
+
+      // We need to find the one that is logically "next"
+      // Since T1 was likely just called or is being processed, we look for WAIT/ALLOCATED
+      // We sort by created_at to find the head of the pending queue
+      const candidates = allTokens.filter(t =>
+        ['WAIT', 'ALLOCATED'].includes(t.status) &&
+        t.presence_status === 'ARRIVED' && // Strict arrival for swap target? User implied just "number 5". Let's stick to queued ones.
+        t.id !== token.id
+      ).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+      const nextToken = candidates[0]; // T2
+
+      if (nextToken) {
+        // SWAP Logic
+        // Swap token_number and created_at to physically and visually swap them
+        const t1Num = token.token_number;
+        const t1Created = token.created_at;
+        const t2Num = nextToken.token_number;
+        const t2Created = nextToken.created_at;
+
+        // Update T1 (The No-Show) -> Becomes T2's position
+        tokensStmt.updateStatus.run({
+          id: token.id,
+          status: 'WAIT', // Back to queue
+          completed_at: null,
+          called_at: null,
+          allocation_time: null, // Reset constraints
+          service_start_time: null,
+          expected_completion_time: null,
+          now: toIso(),
+          eta: null,
+          assigned_counter: null,
+          called_by_counter: null,
+          appointment_date: token.appointment_date // Keep date
+        });
+
+        // Manual Update for Swap fields (using direct prepare avoiding complex updateStatus arg changes)
+        db.prepare('UPDATE tokens SET token_number = ?, created_at = ? WHERE id = ?').run(t2Num, t2Created, token.id);
+
+        // Update T2 (The Victim/Promoted) -> Becomes T1's position (Next to be called)
+        db.prepare('UPDATE tokens SET token_number = ?, created_at = ? WHERE id = ?').run(t1Num, t1Created, nextToken.id);
+
+        return { swapped: true, newNumber: t2Num, swappedWith: t1Num };
+      } else {
+        // No swap target (End of queue)
+        // Just reset to WAIT
+        tokensStmt.updateStatus.run({
+          id: token.id,
+          status: 'WAIT',
+          completed_at: null,
+          called_at: null,
+          allocation_time: null,
+          service_start_time: null,
+          expected_completion_time: null,
+          now: toIso(),
+          eta: null,
+          assigned_counter: null,
+          called_by_counter: null,
+          appointment_date: token.appointment_date
+        });
+        return { swapped: false };
+      }
+    })();
 
     if (token.user_id) {
+      // Log stats? Delay increment?
       usersStmt.updateStats.run({
         id: token.user_id,
         completed_inc: 0,
-        no_show_inc: 1,
+        no_show_inc: 1, // Still count as a "miss", but they are back in queue
         delay: 0,
         now: toIso()
       });
+
+      // Notify User
+      const msg = swapResult.swapped
+        ? `You missed your turn! You have been swapped to Token #${swapResult.newNumber}.`
+        : `You missed your turn! You have been placed back in the queue.`;
+
+      io.to(`user_${token.user_id}`).emit('notification', { message: msg, type: 'alert' });
     }
-  })();
 
-  recalculateQueue(token.office_id);
+    recalculateQueue(token.office_id);
+    res.json({ success: true, swapped: swapResult.swapped });
 
-  // Email Notification: No-Show
-  const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
-  if (recipientEmail) {
-    const office = officesStmt.getById.get(token.office_id);
-    sendEmail(recipientEmail, 'Missed Appointment - GetEzi', emailTemplates.tokenNoShow(
-      token.user_name,
-      token.token_number,
-      office.name
-    ));
+  } catch (err) {
+    console.error('No-Show Swap Error:', err);
+    res.status(500).json({ error: 'Swap Failed: ' + err.message });
   }
-
-  res.json({ success: true });
 });
 
 // Arrive (Office Owner/Staff confirmation)
@@ -1440,13 +1527,52 @@ app.post('/api/tokens/:id/recall', authenticateToken, (req, res) => {
   }
 });
 
+// STAFF QUEUE VIEW
+app.get('/api/offices/:id/staff-queue', authenticateToken, (req, res) => {
+  const { id } = req.params;
+
+  // Auth Check
+  const staffUser = usersStmt.getById.get(req.user.id);
+  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  try {
+    const allTokens = tokensStmt.getForOffice.all(id);
+
+    const nowCtx = new Date();
+    const serverYear = nowCtx.getFullYear();
+    const serverMonth = String(nowCtx.getMonth() + 1).padStart(2, '0');
+    const serverDay = String(nowCtx.getDate()).padStart(2, '0');
+    const today = `${serverYear}-${serverMonth}-${serverDay}`;
+
+    const upNext = allTokens.filter(t => {
+      // Active Queue Logic
+      const isToday = t.appointment_date === today || t.appointment_date === null;
+      const isActiveStatus = ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status);
+      return isToday && isActiveStatus;
+    }).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+    const future = allTokens.filter(t => {
+      const isFuture = t.appointment_date > today;
+      const isFutureStatus = t.status === 'FUTURE';
+      return isFuture || isFutureStatus;
+    }).sort((a, b) => a.appointment_date.localeCompare(b.appointment_date));
+
+    res.json({ upNext, future });
+  } catch (e) {
+    console.error("Staff Queue Fetch Error:", e);
+    res.status(500).json({ error: "Failed to fetch queue" });
+  }
+});
+
 // Admin: Config Counters
 // Admin: Config Counters
 // Admin: Config Counters
 
 // --- CALENDAR API ---
 app.get('/api/offices/:id/calendar', (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const { month } = req.query; // YYYY-MM
 
   if (!month) return res.status(400).json({ error: 'Month parameter (YYYY-MM) required' });
@@ -1504,7 +1630,7 @@ app.get('/api/offices/:id/calendar', (req, res) => {
 
 // Extended Config (Supports Counters + Calendar settings)
 app.patch('/api/offices/:id/config', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
 
   if (req.user.role !== 'admin' && req.user.role !== 'office_owner') return res.sendStatus(403);
 
@@ -1547,7 +1673,7 @@ app.patch('/api/offices/:id/config', authenticateToken, (req, res) => {
 
 // Admin: Config Active Counters
 app.post('/api/offices/:id/active-counters', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const { activeCounters } = req.body;
   const N = parseInt(activeCounters);
 
@@ -1573,7 +1699,7 @@ app.post('/api/offices/:id/active-counters', authenticateToken, (req, res) => {
 // Admin: Pause Office
 // Admin: Pause Office
 app.post('/api/offices/:id/pause', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const { reason } = req.body; // 'LUNCH', 'BREAK', 'MAINTENANCE'
 
   const office = officesStmt.getById.get(id);
@@ -1625,7 +1751,7 @@ app.post('/api/offices/:id/pause', authenticateToken, (req, res) => {
 // Admin: Resume Office
 // Admin: Resume Office
 app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
 
   // SECURITY: Strict Operator Check
   const staffUser = usersStmt.getById.get(req.user.id);
@@ -1658,9 +1784,9 @@ app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
   res.json({ success: true, state: 'LIVE' });
 });
 
-// Endpoint: Get Tokens by User (Aggregated across offices)
+// Endpoint: Get Tokens by User (Strict Split)
 app.get('/api/users/:userId/tokens', authenticateToken, (req, res) => {
-  const { userId } = req.params;
+  const { userId } = req.params; console.log('[GET_TOKENS] Fetching for:', userId);
 
   // Security: Only view own tokens
   if (req.user.id !== userId && req.user.role !== 'admin') {
@@ -1669,7 +1795,46 @@ app.get('/api/users/:userId/tokens', authenticateToken, (req, res) => {
 
   try {
     const tokens = tokensStmt.getForUser.all(userId);
-    res.json(tokens);
+
+    // Strict Separation Logic
+    const nowCtx = new Date();
+    const serverYear = nowCtx.getFullYear();
+    const serverMonth = String(nowCtx.getMonth() + 1).padStart(2, '0');
+    const serverDay = String(nowCtx.getDate()).padStart(2, '0');
+    const today = `${serverYear}-${serverMonth}-${serverDay}`;
+
+    // Active: Today AND (WAIT, ALLOCATED, CALLED)
+    // Note: status might be 'WAIT' even if future if migration failed? No, strict booking prevents that.
+    // We trust 'appointment_date' as source of truth for grouping?
+    // User Rule: "Only ACTIVE tickets can show ETA". "ACTIVE -> tickets for TODAY only".
+
+    const active = tokens.filter(t => {
+      const isToday = t.appointment_date === today;
+      const isActiveStatus = ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status);
+      return isToday && isActiveStatus;
+    }).map(t => {
+      // Enrich with Live ETA if needed (though Recalc should have updated DB)
+      // We ensure ETA fields are populated
+      return t;
+    }).sort((a, b) => {
+      // Sort by ETA ascending
+      // expected_arrival might be null? Use eta_minutes
+      return (a.eta_minutes || 9999) - (b.eta_minutes || 9999);
+    });
+
+    // Upcoming: Future Date OR Status = FUTURE
+    const upcoming = tokens.filter(t => {
+      const isFuture = t.appointment_date > today;
+      const isFutureStatus = t.status === 'FUTURE';
+      // Include both conditions to be safe
+      return isFuture || isFutureStatus;
+    }).sort((a, b) => {
+      // Sort by Date ascending
+      return a.appointment_date.localeCompare(b.appointment_date);
+    });
+
+    res.json({ active, upcoming });
+
   } catch (err) {
     console.error('Error fetching user tokens:', err);
     res.status(500).json({ error: 'Failed to fetch tokens' });
@@ -1678,7 +1843,7 @@ app.get('/api/users/:userId/tokens', authenticateToken, (req, res) => {
 
 // Admin: Emergency Shutdown
 app.post('/api/offices/:id/shutdown', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
 
   // SECURITY: Only Office Owner or Admin
   if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
@@ -1738,7 +1903,7 @@ app.post('/api/offices/:id/shutdown', authenticateToken, (req, res) => {
 // Public: Get Office Status (Original Path was /api/offices/:id)
 // App.jsx calls /api/offices/:id for details
 app.get('/api/offices/:id', async (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   try {
     const office = ensureOffice(id);
     const rawTokens = tokensStmt.getForOffice.all(id);
@@ -1768,7 +1933,7 @@ app.get('/api/offices/:id', async (req, res) => {
 
 // Update Office Timings
 app.put('/api/offices/:id/timings', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const office = ensureOffice(id);
 
   // Get user from database
@@ -1832,7 +1997,7 @@ app.put('/api/offices/:id/timings', authenticateToken, (req, res) => {
 
 // Availability PATCH
 app.patch('/api/offices/:id/availability', (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const { availableToday } = req.body;
   // This was used to manually set availability.
   // We can support it by updating the DB.
@@ -1842,7 +2007,7 @@ app.patch('/api/offices/:id/availability', (req, res) => {
 
 // Pause / Resume
 app.post('/api/offices/:id/pause', (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const { paused } = req.body;
   db.prepare('UPDATE offices SET is_paused = ? WHERE id = ?').run(paused ? 1 : 0, id);
   res.json({ success: true, is_paused: paused });
@@ -2073,7 +2238,7 @@ app.post('/api/auth/logout', authenticateToken, (req, res) => {
 
 // Get All Staff for Office
 app.get('/api/offices/:id/staff-list', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   if (req.user.role !== 'office_owner' && req.user.role !== 'admin') return res.status(403).json({ error: 'Access Denied' });
 
   // Fetch users who are linked to this office and have role 'staff'
@@ -2190,7 +2355,7 @@ app.delete('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
 
 // Get All Staff (Registered)
 app.get('/api/offices/:id/staff', (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
 
   // Fetch from users table where role is staff and office_id matches
   // Note: Schema might need office_id on users if not already present. 
@@ -2259,7 +2424,7 @@ app.put('/api/offices/:id/staff/:staffId', authenticateToken, (req, res) => {
 
 // Create New Staff (With Validation)
 app.post('/api/offices/:id/staff', authenticateToken, (req, res) => {
-  const { id } = req.params;
+  const { id } = req.params; console.log('[BOOK] Request Body:', req.body);
   const { name, email, counter, password } = req.body;
 
   if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
@@ -2690,6 +2855,58 @@ app.get('/api/debug-stmts', (req, res) => {
 
 // 404/Error
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
+
+// --- STRICT NO-SHOW ENFORCER ---
+// Checks every minute for tickets that missed their ETA + Grace Period
+setInterval(() => {
+  try {
+    const GRACE_MINUTES = 5;
+    const now = new Date();
+    const graceCutoff = new Date(now.getTime() - GRACE_MINUTES * 60000).toISOString();
+
+    // Find Late Tokens (WAITING for Today, Not Arrived, ArrivalTime < Cutoff)
+    // We use expected_completion_time as the "Arrival Time" field per new schema usage
+    const lateTokens = db.prepare(`
+      SELECT * FROM tokens 
+      WHERE status = 'WAIT' 
+      AND presence_status != 'ARRIVED' 
+      AND expected_completion_time < ?
+    `).all(graceCutoff);
+
+    if (lateTokens.length > 0) {
+      console.log(`[NO-SHOW] Found ${lateTokens.length} late tickets. Moving to end of queue...`);
+
+      const updateStmt = db.prepare(`
+        UPDATE tokens 
+        SET created_at = ?, expected_completion_time = NULL 
+        WHERE id = ?
+      `);
+
+      db.transaction(() => {
+        lateTokens.forEach(t => {
+          // Move to End: Reset created_at to NOW.
+          // This pushes them to the bottom of the "ORDER BY created_at" list.
+          // We clear expected_completion_time so they don't get punished again immediately 
+          // (RecalculateQueue will assign new ETA).
+          updateStmt.run(toIso(), t.id);
+
+          // Notify
+          io.to(`user_${t.user_id}`).emit('notification', {
+            message: `You missed your arrival time! You have been moved to the end of the queue.`,
+            type: 'alert'
+          });
+        });
+      })();
+
+      // Trigger Queue Recalc
+      const distinctOffices = [...new Set(lateTokens.map(t => t.office_id))];
+      distinctOffices.forEach(oid => recalculateQueue(oid));
+    }
+  } catch (e) {
+    console.error('No-Show Enforcer Error:', e);
+  }
+}, 60000); // Run every 1 minute
+
 
 server.listen(port, () => {
   console.log(`Queue System Active on ${port}`);
