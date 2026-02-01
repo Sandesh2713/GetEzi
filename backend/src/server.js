@@ -1360,9 +1360,12 @@ app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
   const token = tokensStmt.getById.get(req.params.id);
   if (!token) return res.status(404).json({ error: 'Not found' });
 
-  // SECURITY: Strict Operator Check
+  // SECURITY: Strict Operator Check OR Token Owner
   const staffUser = usersStmt.getById.get(req.user.id);
-  if (!staffUser || (staffUser.role !== 'staff' && staffUser.role !== 'office_owner' && staffUser.role !== 'admin')) {
+  const isOwner = token.user_id === req.user.id;
+  const isStaff = staffUser && ['staff', 'office_owner', 'admin'].includes(staffUser.role);
+
+  if (!isStaff && !isOwner) {
     return res.status(403).json({ error: 'Access Denied: Only staff or office owners can cancel tokens.' });
   }
 
@@ -1377,7 +1380,9 @@ app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
       expected_completion_time: null,
       now: toIso(),
       eta: null,
-      appointment_date: null
+      appointment_date: null,
+      assigned_counter: null,
+      called_by_counter: null
     });
   })();
 

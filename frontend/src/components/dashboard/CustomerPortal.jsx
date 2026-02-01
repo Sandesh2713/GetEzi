@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, User, RefreshCw, Clock, Users, MapPin, Phone, Mail, Calendar, X, Map, List, ChevronRight, ChevronLeft, Check, Leaf } from 'lucide-react';
+import { Bell, User, RefreshCw, Clock, Users, MapPin, Phone, Mail, Calendar, X, Map, List, ChevronRight, ChevronLeft, Check, Leaf, XCircle } from 'lucide-react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 
@@ -649,13 +649,26 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
 
                                             {/* Action Buttons */}
                                             {['ALLOCATED', 'WAIT'].includes(token.status) && token.presence_status !== 'ARRIVED' && (
-                                                <button
-                                                    onClick={() => onUpdateToken(token.id, 'arrive')}
-                                                    className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
-                                                >
-                                                    <MapPin size={14} />
-                                                    I've Arrived
-                                                </button>
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        onClick={() => onUpdateToken(token.id, 'arrive')}
+                                                        className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
+                                                    >
+                                                        <MapPin size={14} />
+                                                        I've Arrived
+                                                    </button>
+                                                    <button
+                                                        onClick={() => {
+                                                            if (confirm('Are you sure you want to cancel this ticket?')) {
+                                                                onUpdateToken(token.id, 'cancel');
+                                                            }
+                                                        }}
+                                                        className="py-2 px-4 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
+                                                    >
+                                                        <XCircle size={14} />
+                                                        Cancel
+                                                    </button>
+                                                </div>
                                             )}
 
                                             {token.presence_status === 'ARRIVED' && token.status === 'ALLOCATED' && (
@@ -710,6 +723,18 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                     <span>{token.office_name || currentOffice?.name || 'Office'}</span>
                                                 </div>
                                             </div>
+
+                                            <button
+                                                onClick={() => {
+                                                    if (confirm('Are you sure you want to cancel this upcoming appointment?')) {
+                                                        onUpdateToken(token.id, 'cancel');
+                                                    }
+                                                }}
+                                                className="w-full py-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
+                                            >
+                                                <XCircle size={14} />
+                                                Cancel
+                                            </button>
                                         </div>
                                     ))}
                                 </div>
