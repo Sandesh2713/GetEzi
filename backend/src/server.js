@@ -86,18 +86,18 @@ setInterval(() => {
   }
 }, 5000);
 
+
 // --- Strict No-Show Automation (Every 1 min) ---
 cron.schedule('* * * * *', () => {
-  // console.log('Running No-Show Check...');
   try {
     const offices = officesStmt.getAll.all();
     const nowMs = Date.now();
     const nowIso = new Date().toISOString();
-    const today = nowIso.split('T')[0];
 
     offices.forEach(office => {
       // Get active tokens for today
       const tokens = tokensStmt.getForOffice.all(office.id)
+
         .filter(t => t.status !== 'COMPLETED' && t.status !== 'cancelled' && t.status !== 'no-show' && t.status !== 'history');
 
       tokens.forEach(t => {
@@ -141,6 +141,12 @@ cron.schedule('* * * * *', () => {
   } catch (e) {
     console.error('No-Show Cron Error:', e);
   }
+});
+
+/* --- Smart Daily Scheduler (Every 5 mins) --- */
+const SchedulerService = require('./logic/SchedulerService');
+cron.schedule('*/5 * * * *', () => {
+  SchedulerService.activateDailyTickets();
 });
 
 /* --- Email Helper --- */
@@ -1614,7 +1620,17 @@ app.get('/api/offices/:id/staff-queue', authenticateToken, (req, res) => {
       return isFuture || isFutureStatus;
     }).sort((a, b) => a.appointment_date.localeCompare(b.appointment_date));
 
-    res.json({ upNext, future });
+    const completedCount = allTokens.filter(t => {
+      const isToday = t.appointment_date === today || t.appointment_date === null;
+      return isToday && t.status === 'COMPLETED';
+    }).length;
+
+    const noShowCount = allTokens.filter(t => {
+      const isToday = t.appointment_date === today || t.appointment_date === null;
+      return isToday && t.status === 'no-show';
+    }).length;
+
+    res.json({ upNext, future, stats: { served: completedCount, noShow: noShowCount } });
   } catch (e) {
     console.error("Staff Queue Fetch Error:", e);
     res.status(500).json({ error: "Failed to fetch queue" });

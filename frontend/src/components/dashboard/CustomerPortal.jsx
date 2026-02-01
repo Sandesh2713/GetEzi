@@ -502,24 +502,42 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                     <div className="lg:col-span-1 space-y-6">
                         {/* Office Selection */}
                         <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4">Select Office</p>
-                            <div className="space-y-2">
-                                {availableOffices.length > 0 ? availableOffices.map((off) => (
-                                    <button
-                                        key={off.id}
-                                        onClick={() => {
-                                            setSelectedOffice(off.id);
-                                            if (onOfficeSelect) onOfficeSelect(off.id);
-                                        }}
-                                        className={`w-full !p-3 !rounded-xl !border-2 text-left transition-all !text-sm group ${selectedOffice === off.id
-                                            ? '!border-blue-500 !bg-blue-50'
-                                            : '!border-transparent !bg-white hover:!bg-slate-50'
-                                            }`}
-                                    >
-                                        <div className={`font-bold transition-colors ${selectedOffice === off.id ? '!text-blue-700' : '!text-slate-700'}`}>{off.name}</div>
-                                        <div className="text-xs !text-slate-500 mt-1 truncate">{off.address}</div>
-                                    </button>
-                                )) : <p className="text-sm italic text-slate-400">No offices found</p>}
+                            <h2 className="text-[18px] font-bold text-slate-800 mb-4 px-1">Select Office</h2>
+                            <div className="space-y-3">
+                                {availableOffices.length > 0 ? availableOffices.map((off) => {
+                                    const isSelected = selectedOffice === off.id;
+                                    return (
+                                        <div
+                                            key={off.id}
+                                            onClick={() => {
+                                                setSelectedOffice(off.id);
+                                                if (onOfficeSelect) onOfficeSelect(off.id);
+                                            }}
+                                            className={`
+                                                w-full flex justify-between items-center p-4 rounded-xl border transition-all duration-200 group relative bg-white cursor-pointer select-none
+                                                ${isSelected
+                                                    ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-500 shadow-sm'
+                                                    : 'border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300 hover:-translate-y-0.5'
+                                                }
+                                            `}
+                                        >
+                                            <div className="flex flex-col items-start gap-1">
+                                                <h3 className={`text-[15px] font-bold ${isSelected ? 'text-blue-700' : 'text-slate-900 group-hover:text-slate-700'}`}>
+                                                    {off.name}
+                                                </h3>
+                                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold uppercase tracking-wider bg-slate-100 text-slate-500">
+                                                    {off.hours || '24×7'}
+                                                </span>
+                                            </div>
+
+                                            <div className="text-right pl-4">
+                                                <p className="text-[13px] font-medium text-slate-600 leading-tight max-w-[140px] truncate">
+                                                    {off.address}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    );
+                                }) : <p className="text-sm italic text-slate-400">No offices found</p>}
                             </div>
                         </div>
 

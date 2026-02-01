@@ -133,7 +133,20 @@ export default function CustomerPreferences({ onBack }) {
 
     const [preferences, setPreferences] = useState(() => {
         const saved = localStorage.getItem('customerPreferences');
-        return saved ? JSON.parse(saved) : defaultPreferences;
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                // Merge saved 'enabled' status with default config (restoring icons)
+                return defaultPreferences.map(pref => {
+                    const savedPref = parsed.find(p => p.id === pref.id);
+                    return savedPref ? { ...pref, enabled: savedPref.enabled } : pref;
+                });
+            } catch (e) {
+                console.error("Failed to parse preferences", e);
+                return defaultPreferences;
+            }
+        }
+        return defaultPreferences;
     });
 
     const [saveStatus, setSaveStatus] = useState('idle');
@@ -159,8 +172,9 @@ export default function CustomerPreferences({ onBack }) {
         // Simulate API call
         await new Promise((resolve) => setTimeout(resolve, 1000));
 
-        // Persist
-        localStorage.setItem('customerPreferences', JSON.stringify(preferences));
+        // Persist - Strip out React components (icons) to avoid circular JSON error
+        const simplePrefs = preferences.map(({ id, enabled }) => ({ id, enabled }));
+        localStorage.setItem('customerPreferences', JSON.stringify(simplePrefs));
 
         setSaveStatus('saved');
         setHasChanges(false);

@@ -2582,8 +2582,8 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
   const currentToken = allTokens.find(t => t.status === 'CALLED' && t.called_by_counter === myCounter); // My Active
   const myQueue = myTokens.filter(t => ['ALLOCATED', 'WAIT'].includes(t.status)); // Waiting for me
   const generalQueue = queueData.upNext.filter(t => t.status === 'WAIT' && !t.assigned_counter); // Global Wait
-  const completedCount = allTokens.filter(t => ['COMPLETED'].includes(t.status)).length; // Simplified stats
-  const noShowCount = allTokens.filter(t => ['no-show'].includes(t.status)).length;
+  const completedCount = queueData.stats?.served || 0;
+  const noShowCount = queueData.stats?.noShow || 0;
   const futureBookings = queueData.future;
 
   // Closed Check
@@ -2741,7 +2741,10 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
 
                     <div className="grid grid-cols-2 gap-4 max-w-md mx-auto mb-4">
                       <motion.button
-                        onClick={() => onUpdateToken(currentToken.id, 'complete')}
+                        onClick={async () => {
+                          await onUpdateToken(currentToken.id, 'complete');
+                          fetchQueue();
+                        }}
                         className="px-6 py-4 !bg-gradient-to-r !from-emerald-600 !to-green-600 !text-white rounded-xl font-bold hover:shadow-lg transition-all border-none"
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
@@ -2752,7 +2755,10 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
                         </div>
                       </motion.button>
                       <motion.button
-                        onClick={() => onUpdateToken(currentToken.id, 'no-show')}
+                        onClick={async () => {
+                          await onUpdateToken(currentToken.id, 'no-show');
+                          fetchQueue();
+                        }}
                         className="px-6 py-4 !bg-gray-100 !text-gray-700 rounded-xl font-bold hover:!bg-gray-200 transition-all border-none"
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
