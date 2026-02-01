@@ -20,7 +20,7 @@ import CustomerPortal from './components/dashboard/CustomerPortal';
 import OwnerDashboard from './components/dashboard/OwnerDashboard';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee, Calendar
+  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee, Calendar, Bell
 } from 'lucide-react';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
@@ -2324,20 +2324,33 @@ function SuperAdminDashboard({ user, office, onLogout, onNavigate }) {
 
   return (
     <div className="dashboard-layout" style={{ maxWidth: '1200px', margin: '0 auto', padding: '24px' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
-        <div>
-          <div className="eyebrow">Super Admin Portal</div>
-          <h2 style={{ fontSize: '2rem', marginBottom: '4px' }}>{office?.name || 'My Office'}</h2>
-          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-            <span className={`chip ${office?.is_paused ? 'chip-warning' : 'chip-success'}`}>
-              <span className="chip-dot" />
-              {office?.is_paused ? 'Operations Paused' : 'System Live'}
-            </span>
-            <span className="text-muted">Owner: {user.name}</span>
+      <header className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-sm transition-all duration-300 mb-8">
+        <div className="container mx-auto h-16 max-w-7xl px-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <span className="text-xl font-bold tracking-tight text-gray-900">GetEzi</span>
+              <motion.div
+                animate={{ rotate: [0, 10, -10, 0] }}
+                transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.77 10-10 10Z" /><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" /></svg>
+              </motion.div>
+            </div>
+            <div className="hidden sm:block h-6 w-px bg-gray-200 mx-2" />
+            <div className="flex flex-col">
+              <span className="text-sm font-bold text-gray-900 leading-none">Super Admin</span>
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider leading-none mt-1">{office?.name}</span>
+            </div>
           </div>
-        </div>
-        <div style={{ display: 'flex', gap: '12px' }}>
-          <button className="btn btn-secondary" onClick={onLogout}>Logout</button>
+          <div className="flex items-center gap-4">
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${office?.is_paused ? 'bg-yellow-100 text-yellow-700' : 'bg-green-100 text-green-700'}`}>
+              {office?.is_paused ? 'Paused' : 'Live'}
+            </span>
+            <div className="h-6 w-px bg-gray-200" />
+            <button onClick={onLogout} className="text-gray-500 hover:text-red-600 transition-colors">
+              <LogOut size={20} />
+            </button>
+          </div>
         </div>
       </header>
 
@@ -2578,38 +2591,43 @@ function StaffDashboard({ user, office, tokens, onCall, onUpdateToken, onLogout 
       </div>
 
       {/* Header ... */}
-      <motion.header
-        className="bg-white border-b border-gray-200 sticky top-0 w-full z-50 shadow-sm"
-        initial={{ y: -100 }}
-        animate={{ y: 0 }}
-        transition={{ type: "spring", stiffness: 100 }}
-      >
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          {/* ... Header Content (Keep existing) ... */}
-          <div className="flex items-center gap-3">
-            <div className={`p-2 rounded-lg ${isActive ? 'bg-purple-50' : 'bg-red-50'}`}>
-              <User className={isActive ? 'text-purple-600' : 'text-red-600'} size={24} />
+      <header className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-sm transition-all duration-300">
+        <div className="container mx-auto h-16 max-w-7xl px-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1">
+              <span className="text-xl font-bold tracking-tight text-gray-900">GetEzi</span>
+              <motion.div
+                animate={{ rotate: [0, 10, -10, 0] }}
+                transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.77 10-10 10Z" /><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" /></svg>
+              </motion.div>
             </div>
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">Counter {myCounter}</h1>
-              <p className="text-xs text-gray-500 font-medium">
-                {user.name} · Staff Portal
-              </p>
+            <div className="hidden sm:block h-6 w-px bg-gray-200 mx-2" />
+            <div className="flex flex-col justify-center">
+              <span className="text-sm font-bold text-gray-900 leading-tight">Counter {myCounter}</span>
+              <span className="text-[10px] text-gray-500 uppercase tracking-wider leading-tight">Staff Portal</span>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className={`w-3 h-3 rounded-full animate-pulse ${isActive ? 'bg-purple-500' : 'bg-red-500'}`} />
-              <span className={`text-sm font-medium ${isActive ? 'text-purple-600' : 'text-red-600'}`}>
-                {isActive ? 'Online & Ready' : 'Counter Disabled'}
+            <div className="hidden md:flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full animate-pulse ${isActive ? 'bg-purple-500' : 'bg-red-500'}`} />
+              <span className={`text-xs font-bold uppercase tracking-wider ${isActive ? 'text-purple-600' : 'text-red-600'}`}>
+                {isActive ? 'Online' : 'Disabled'}
               </span>
             </div>
-            <div className="h-8 w-px bg-gray-200" />
-            <motion.button onClick={onLogout} className="p-2 text-red-500 border-none bg-transparent"><LogOut size={20} /></motion.button>
+            <div className="h-6 w-px bg-gray-200" />
+            <motion.button
+              onClick={onLogout}
+              className="p-2 text-gray-500 hover:bg-gray-100 hover:text-red-600 rounded-lg transition-colors border-none bg-transparent"
+              title="Logout"
+            >
+              <LogOut size={18} />
+            </motion.button>
           </div>
         </div>
-      </motion.header>
+      </header>
 
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-6 py-12 relative z-10">
@@ -3461,6 +3479,43 @@ function App() {
     );
   }
 
+  // --- EARLY RETURN FOR OWNER DASHBOARD ---
+  if (view === 'super_admin' && user?.role === 'office_owner') {
+    return (
+      <>
+        {connectionStatus === 'LOST' && (
+          <div style={{ backgroundColor: '#dc3545', color: 'white', padding: '10px', textAlign: 'center', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 1000 }}>
+            Connection Lost — Reconnecting...
+          </div>
+        )}
+        {message && <div className="message">{message}</div>}
+        <OwnerDashboard user={user} offices={offices} onUpdate={loadOffices} onLogout={logout} />
+      </>
+    );
+  }
+
+  // --- EARLY RETURN FOR STAFF DASHBOARD ---
+  if (view === 'staff' && (user?.role === 'staff' || user?.role === 'office_owner')) {
+    return (
+      <>
+        {connectionStatus === 'LOST' && (
+          <div style={{ backgroundColor: '#dc3545', color: 'white', padding: '10px', textAlign: 'center', fontWeight: 'bold', position: 'sticky', top: 0, zIndex: 1000 }}>
+            Connection Lost — Reconnecting...
+          </div>
+        )}
+        {message && <div className="message">{message}</div>}
+        <StaffDashboard
+          user={user}
+          office={selectedOffice}
+          tokens={selectedOfficeData?.tokens || []}
+          onCall={callCounter}
+          onUpdateToken={updateToken}
+          onLogout={logout}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="app">
       {connectionStatus === 'LOST' && (
@@ -3469,23 +3524,33 @@ function App() {
         </div>
       )}
       {showHeader && (
-        <header className="app-header">
-          <div>
-            <div className="eyebrow">Queue Management System</div>
-            <h1>Serve people faster</h1>
-          </div>
-          <div className="user-menu">
-            {!user ? (
-              <button onClick={() => setView('login')}>Login / Register</button>
-            ) : (
-              <>
-                <div className="bell-icon" onClick={() => setShowNotifications(!showNotifications)}>
-                  🔔
-                  {notificationCount > 0 && <span className="bell-count">{notificationCount}</span>}
-                </div>
-                <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
-              </>
-            )}
+        <header className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-sm transition-all duration-300">
+          <div className="container mx-auto h-16 max-w-7xl px-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <span className="text-xl font-bold tracking-tight text-gray-900">GetEzi</span>
+                <motion.div
+                  animate={{ rotate: [0, 10, -10, 0] }}
+                  transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.77 10-10 10Z" /><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" /></svg>
+                </motion.div>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              {!user ? (
+                <button onClick={() => setView('login')} className="bg-gray-900 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-gray-800 transition-colors">Login / Register</button>
+              ) : (
+                <>
+                  <div className="relative cursor-pointer text-gray-500 hover:text-gray-900 transition-colors" onClick={() => setShowNotifications(!showNotifications)}>
+                    <Bell size={20} />
+                    {notificationCount > 0 && <span className="absolute -top-1 -right-1 flex h-3 w-3 items-center justify-center rounded-full bg-red-500 text-[8px] font-bold text-white ring-2 ring-white">{notificationCount}</span>}
+                  </div>
+                  <div className="h-6 w-px bg-gray-200" />
+                  <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
+                </>
+              )}
+            </div>
           </div>
         </header>
       )}
@@ -3614,9 +3679,25 @@ function App() {
         />
       ) : view === 'history' ? (
         <>
-          <header className="app-header">
-            <div className="eyebrow">Archives</div>
-            <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
+          <header className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-sm transition-all duration-300">
+            <div className="container mx-auto h-16 max-w-7xl px-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1">
+                  <span className="text-xl font-bold tracking-tight text-gray-900">GetEzi</span>
+                  <motion.div
+                    animate={{ rotate: [0, 10, -10, 0] }}
+                    transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.77 10-10 10Z" /><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" /></svg>
+                  </motion.div>
+                </div>
+                <div className="hidden sm:block h-6 w-px bg-gray-200 mx-2" />
+                <p className="hidden sm:block text-xs font-bold text-gray-400 tracking-widest uppercase mt-0.5">Archives</p>
+              </div>
+              <div className="flex items-center gap-4">
+                <ProfileMenu user={user} onNavigate={setView} onLogout={logout} />
+              </div>
+            </div>
           </header>
           <HistoryView
             user={user}
@@ -3627,12 +3708,8 @@ function App() {
         </>
       ) : view === 'settings' ? (
         <SettingsView user={user} onBack={() => setView('super_admin')} adminKey={adminKey} selectedOfficeId={selectedOfficeId} />
-      ) : view === 'super_admin' && user?.role === 'office_owner' ? (
-        <OwnerDashboard user={user} offices={offices} onUpdate={loadOffices} onLogout={logout} />
       ) : view === 'super_admin' ? (
         <SuperAdminDashboard user={user} office={selectedOffice} onLogout={logout} onNavigate={setView} />
-      ) : view === 'staff' && (user?.role === 'staff' || user?.role === 'office_owner') ? (
-        <StaffDashboard user={user} office={selectedOffice} tokens={selectedOfficeData?.tokens || []} onCall={callCounter} onUpdateToken={updateToken} onLogout={logout} />
       ) : (view === 'customer' || (!view && user?.role === 'customer')) ? (
         <CustomerPortal user={user} onLogout={logout} onRefresh={() => { loadOffices(); fetchOfficeDetail(selectedOfficeId); }} office={selectedOffice} />
       ) : (

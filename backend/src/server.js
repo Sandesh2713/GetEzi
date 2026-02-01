@@ -347,6 +347,13 @@ const tokensStmt = {
   getMaxTokenNum: db.prepare(`SELECT COALESCE(MAX(token_number), 0) as maxNum FROM tokens WHERE office_id = ?`),
   markArrived: db.prepare(`UPDATE tokens SET presence_status = 'ARRIVED', arrival_confirmed_at = @now WHERE id = @id`),
   updateEligibility: db.prepare(`UPDATE tokens SET eligibility_time = @time WHERE id = @id`),
+  getForUser: db.prepare(`
+    SELECT t.*, o.name as office_name, o.address as office_address
+    FROM tokens t
+    LEFT JOIN offices o ON t.office_id = o.id
+    WHERE t.user_id = ? AND t.status NOT IN ('COMPLETED', 'cancelled', 'no-show', 'history')
+    ORDER BY t.created_at ASC
+  `),
 };
 
 // --- VALIDATION HELPERS ---
@@ -1641,84 +1648,91 @@ app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
     });
   })();
 
-  // Admin: Emergency Shutdown
-  app.post('/api/offices/:id/shutdown', authenticateToken, (req, res) => {
-    const { id } = req.params;
-
-    // SECURITY: Only Office Owner or Admin
-    if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
-      return res.status(403).json({ error: 'Access Denied: Only office owners can perform emergency shutdown.' });
-    }
-
-    const now = toIso();
-
-    db.transaction(() => {
-      officesStmt.updateState.run({
-        id,
-        state: 'OFFLINE',
-        time: now
-      });
-    })();
-
-    // Emit Update
-    const updatedOffice = officesStmt.getById.get(id);
-    io.to(`office_${id}`).emit('office_state', {
-      state: updatedOffice.state,
-      pause_started_at: updatedOffice.pause_started_at
-    });
-
-    // CRITICAL BROADCAST: Notify EVERYONE
-    // 1. Notify Staff
-    try {
-      const activeStaff = activeStaffStmt.getForOffice.all(id);
-      activeStaff.forEach(s => {
-        io.to(`user_${s.user_id}`).emit('system_shutdown', {
-          message: 'EMERGENCY: System is shutting down immediately. Please secure your station.'
-        });
-      });
-    } catch (e) {
-      console.error('Shutdown Staff Notify Error:', e);
-    }
-
-    // 2. Notify Customers (Active Tokens)
-    try {
-      const tokens = tokensStmt.getForOffice.all(id).filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
-      tokens.forEach(t => {
-        if (t.user_id) {
-          io.to(`user_${t.user_id}`).emit('system_shutdown', {
-            message: 'NOTICE: The office has gone OFFLINE for emergency/maintenance. Please check back later.'
-          });
-        }
-      });
-    } catch (e) {
-      console.error('Shutdown Customer Notify Error:', e);
-    }
-
-    res.json({ success: true, state: 'OFFLINE' });
-  });
-
-  // Recalculate to refresh ETAs relative to NOW
-  recalculateQueue(id);
-
-  // Emit Update
   const updatedOffice = officesStmt.getById.get(id);
   io.to(`office_${id}`).emit('office_state', {
     state: 'LIVE',
     pause_started_at: null
   });
 
-  // Notify Waiters
-  const tokens = tokensStmt.getForOffice.all(id).filter(t => ['WAIT', 'ALLOCATED'].includes(t.status));
-  tokens.forEach(t => {
-    if (t.user_id) {
-      io.to(`user_${t.user_id}`).emit('notification', {
-        message: `Office has resumed operations. Queue is moving.`
-      });
-    }
-  });
-
+  recalculateQueue(id);
   res.json({ success: true, state: 'LIVE' });
 });
+
+// Endpoint: Get Tokens by User (Aggregated across offices)
+app.get('/api/users/:userId/tokens', authenticateToken, (req, res) => {
+  const { userId } = req.params;
+
+  // Security: Only view own tokens
+  if (req.user.id !== userId && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  try {
+    const tokens = tokensStmt.getForUser.all(userId);
+    res.json(tokens);
+  } catch (err) {
+    console.error('Error fetching user tokens:', err);
+    res.status(500).json({ error: 'Failed to fetch tokens' });
+  }
+});
+
+// Admin: Emergency Shutdown
+app.post('/api/offices/:id/shutdown', authenticateToken, (req, res) => {
+  const { id } = req.params;
+
+  // SECURITY: Only Office Owner or Admin
+  if (req.user.role !== 'office_owner' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied: Only office owners can perform emergency shutdown.' });
+  }
+
+  const now = toIso();
+
+  db.transaction(() => {
+    officesStmt.updateState.run({
+      id,
+      state: 'OFFLINE',
+      time: now
+    });
+  })();
+
+  // Emit Update
+  const updatedOffice = officesStmt.getById.get(id);
+  io.to(`office_${id}`).emit('office_state', {
+    state: updatedOffice.state,
+    pause_started_at: updatedOffice.pause_started_at
+  });
+
+  // CRITICAL BROADCAST: Notify EVERYONE
+  // 1. Notify Staff
+  try {
+    const activeStaff = activeStaffStmt.getForOffice.all(id);
+    activeStaff.forEach(s => {
+      io.to(`user_${s.user_id}`).emit('system_shutdown', {
+        message: 'EMERGENCY: System is shutting down immediately. Please secure your station.'
+      });
+    });
+  } catch (e) {
+    console.error('Shutdown Staff Notify Error:', e);
+  }
+
+  // 2. Notify Customers (Active Tokens)
+  try {
+    const tokens = tokensStmt.getForOffice.all(id).filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
+    tokens.forEach(t => {
+      if (t.user_id) {
+        io.to(`user_${t.user_id}`).emit('system_shutdown', {
+          message: 'NOTICE: The office has gone OFFLINE for emergency/maintenance. Please check back later.'
+        });
+      }
+    });
+  } catch (e) {
+    console.error('Shutdown Customer Notify Error:', e);
+  }
+
+  res.json({ success: true, state: 'OFFLINE' });
+});
+
+
 
 
 // Public: Get Office Status (Original Path was /api/offices/:id)

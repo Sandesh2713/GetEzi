@@ -419,23 +419,29 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             </div>
 
             {/* Header */}
-            <motion.header
-                className="bg-white border-b border-gray-200 sticky top-0 w-full z-50 shadow-sm"
-                initial={{ y: -100 }}
-                animate={{ y: 0 }}
-                transition={{ type: "spring", stiffness: 100 }}
-            >
-                <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+            <header className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-sm transition-all duration-300">
+                <div className="container mx-auto h-16 max-w-7xl px-4 flex items-center justify-between">
                     {/* Logo/Title */}
-                    <div className="flex items-center gap-3">
-                        <div className="p-2 bg-green-50 rounded-lg">
-                            <Shield className="text-green-600" size={24} />
+                    <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1">
+                            <span className="text-xl font-bold tracking-tight text-gray-900">GetEzi</span>
+                            <motion.div
+                                animate={{ rotate: [0, 10, -10, 0] }}
+                                transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
+                            >
+                                {/* Using Leaf import, need to ensure it's imported (it is not in the original file, need to check imports) */}
+                                {/* Original OwnerDashboard has: Users, BarChart3, Settings, Bell, LogOut, Plus, Edit2, Trash2, AlertCircle, Download, RefreshCw, Zap, TrendingUp, Clock, CheckCircle2, Activity, Shield */}
+                                {/* I need to add Leaf to imports or use Shield as temporary if I can't add import easily in this replace step. */}
+                                {/* Wait, I can't add import easily here without another call. */}
+                                {/* I will use Shield for now but styled like the Leaf? No, I should add the import if possible. */}
+                                {/* Actually, Step 1: Add Leaf to imports. Step 2: Update Header. */}
+                                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.77 10-10 10Z" /><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12" /></svg>
+                            </motion.div>
                         </div>
+                        <div className="hidden sm:block h-6 w-px bg-gray-200 mx-2" />
                         <div>
-                            <h1 className="text-xl font-bold text-gray-900">Owner Dashboard</h1>
-                            <p className="text-xs text-gray-500 font-medium">
-                                {activeOffice ? activeOffice.name : 'Loading Office...'}
-                            </p>
+                            <p className="hidden sm:block text-xs font-bold text-gray-400 tracking-widest uppercase mt-0.5">Owner Panel</p>
+                            <p className="text-[10px] text-gray-400 font-medium sm:hidden">Owner</p>
                         </div>
                     </div>
 
@@ -474,7 +480,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                         </motion.button>
                     </div>
                 </div>
-            </motion.header>
+            </header>
 
             {/* Main Content */}
             <main className="max-w-7xl mx-auto px-6 py-12 relative z-10">

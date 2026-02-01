@@ -107,15 +107,41 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         }
     }, [user]);
 
+    // --- FETCH USER TOKENS (ALL OFFICES) ---
+    const [userTokens, setUserTokens] = useState([]);
+
+    // Initial fetch + Periodic Poll (fallback for socket)
+    useEffect(() => {
+        if (!user?.id) return;
+        const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+        const fetchUserTokens = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/api/users/${user.id}/tokens`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setUserTokens(data);
+                }
+            } catch (e) {
+                console.error("Failed to fetch user tokens", e);
+            }
+        };
+
+        fetchUserTokens();
+        const interval = setInterval(fetchUserTokens, 10000); // refresh every 10s
+        return () => clearInterval(interval);
+    }, [user?.id, tokens]); // Re-fetch if 'tokens' prop update triggers a refresh hint (though tokens prop is office-specific)
+
     const activeTokens = useMemo(() => {
-        if (!user || !tokens) return [];
-        return tokens.filter(t => (t.user_id === user.id) && ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
-    }, [user, tokens]);
+        if (!userTokens) return [];
+        return userTokens.filter(t => ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status));
+    }, [userTokens]);
 
     const futureTokens = useMemo(() => {
-        if (!user || !tokens) return [];
-        return tokens.filter(t => (t.user_id === user.id) && t.status === 'FUTURE');
-    }, [user, tokens]);
+        if (!userTokens) return [];
+        return userTokens.filter(t => t.status === 'FUTURE');
+    }, [userTokens]);
 
     // Process real data
     const currentOffice = availableOffices.find(o => o.id === selectedOffice) || office || {};
@@ -329,19 +355,20 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
             </div>
 
             {/* Header */}
-            <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-xl border-b border-slate-100 shadow-sm transition-all duration-300">
-                <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-                    <div className="flex flex-col">
-                        <div className="flex items-center gap-1.5 group cursor-pointer">
-                            <span className="text-2xl font-bold tracking-tight text-slate-900 group-hover:text-blue-600 transition-colors">GetEzi</span>
+            <header className="sticky top-0 z-50 w-full bg-white/95 backdrop-blur-md border-b border-gray-100 shadow-sm transition-all duration-300">
+                <div className="container mx-auto h-16 max-w-7xl px-4 flex items-center justify-between">
+                    <div className="flex items-center gap-2 cursor-pointer" onClick={() => window.location.reload()}>
+                        <div className="flex items-center gap-1">
+                            <span className="text-xl font-bold tracking-tight text-gray-900">GetEzi</span>
                             <motion.div
                                 animate={{ rotate: [0, 10, -10, 0] }}
                                 transition={{ duration: 2, repeat: Infinity, repeatDelay: 3 }}
                             >
-                                <Leaf className="h-6 w-6 text-emerald-500" fill="currentColor" fillOpacity={0.2} />
+                                <Leaf className="h-5 w-5 text-emerald-500" />
                             </motion.div>
                         </div>
-                        <p className="text-[10px] font-bold text-slate-400 tracking-[0.2em] uppercase ml-0.5 mt-0.5">Queue Management</p>
+                        <div className="hidden sm:block h-6 w-px bg-gray-200 mx-2" />
+                        <p className="hidden sm:block text-xs font-bold text-gray-400 tracking-widest uppercase mt-0.5">Queue Portal</p>
                     </div>
                     <div className="flex items-center gap-4">
                         <div className="relative">
@@ -577,6 +604,9 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                 <div className="flex flex-col">
                                                     <span className="font-bold text-slate-800 text-lg">#{token.token_number}</span>
                                                     <span className="text-xs text-slate-500 font-medium">{token.service_type || 'General Service'}</span>
+                                                    {token.office_name && (
+                                                        <span className="text-[10px] text-blue-600 font-bold uppercase tracking-wider mt-1">{token.office_name}</span>
+                                                    )}
                                                 </div>
                                                 <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border ${token.status === 'CALLED' ? 'bg-green-100 text-green-700 border-green-200' :
                                                     token.status === 'ALLOCATED' ? 'bg-blue-100 text-blue-700 border-blue-200' :
