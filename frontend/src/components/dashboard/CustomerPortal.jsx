@@ -501,7 +501,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                     {/* Left Sidebar */}
                     <div className="lg:col-span-1 space-y-6">
                         {/* Office Selection */}
-                        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <div className="bg-white rounded-2xl p-5 shadow-sm border-2 border-slate-300">
                             <h2 className="text-[18px] font-bold text-slate-800 mb-4 px-1">Select Office</h2>
                             <div className="space-y-3">
                                 {availableOffices.length > 0 ? availableOffices.map((off) => {
@@ -542,7 +542,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                         </div>
 
                         {/* Current Status */}
-                        <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
+                        <div className="bg-white rounded-2xl p-5 shadow-sm border-2 border-slate-300">
                             <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Office Details</p>
                             <h2 className="text-xl font-bold text-slate-800 mb-3">{currentOffice?.name || 'Select an Office'}</h2>
                             {currentOffice?.id ? (
@@ -566,12 +566,12 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
 
                             {currentOffice?.id && (
                                 <div className="grid grid-cols-2 gap-3 mb-5">
-                                    <div className="p-3 bg-blue-50 rounded-xl border border-blue-100 flex flex-col items-center justify-center text-center">
+                                    <div className="p-3 bg-blue-50 rounded-xl border-2 border-blue-200 flex flex-col items-center justify-center text-center">
                                         <Clock size={20} className="text-blue-500 mb-1" />
                                         <span className="text-xs font-semibold text-slate-600 mb-1">Wait Time</span>
                                         <span className="text-lg font-bold text-blue-700">{waitTime}</span>
                                     </div>
-                                    <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-100 flex flex-col items-center justify-center text-center">
+                                    <div className="p-3 bg-emerald-50 rounded-xl border-2 border-emerald-200 flex flex-col items-center justify-center text-center">
                                         <Users size={20} className="text-emerald-500 mb-1" />
                                         <span className="text-xs font-semibold text-slate-600 mb-1">Open Slots</span>
                                         <span className="text-lg font-bold text-emerald-700">{availableSlots}</span>
@@ -623,7 +623,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                             {activeTokens.length > 0 ? (
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     {activeTokens.map((token) => (
-                                        <div key={token.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:border-blue-200 transition-colors group relative overflow-hidden">
+                                        <div key={token.id} className="bg-white p-4 rounded-2xl border-2 border-slate-100 shadow-sm hover:border-blue-200 transition-colors group relative overflow-hidden">
                                             {/* Status Badge */}
                                             <div className="flex justify-between items-start mb-3">
                                                 <div className="flex flex-col">
@@ -681,7 +681,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                                 onUpdateToken(token.id, 'cancel');
                                                             }
                                                         }}
-                                                        className="py-2 px-4 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
+                                                        className="py-2 px-4 bg-white border-2 border-rose-300 text-rose-700 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
                                                     >
                                                         <XCircle size={14} />
                                                         Cancel
@@ -690,7 +690,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                             )}
 
                                             {token.presence_status === 'ARRIVED' && token.status === 'ALLOCATED' && (
-                                                <div className="w-full py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border border-emerald-100">
+                                                <div className="w-full py-2 bg-emerald-50 text-emerald-700 rounded-xl text-xs font-bold flex items-center justify-center gap-2 border-2 border-emerald-200">
                                                     <Check size={14} />
                                                     You've Arrived
                                                 </div>
@@ -699,7 +699,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                     ))}
                                 </div>
                             ) : (
-                                <div className="bg-slate-50 rounded-2xl p-6 border border-slate-100 flex flex-col items-center justify-center text-center border-dashed">
+                                <div className="bg-slate-50 rounded-2xl p-6 border-2 border-slate-300 flex flex-col items-center justify-center text-center border-dashed">
                                     <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center mb-3 shadow-sm text-slate-300">
                                         <Calendar size={24} />
                                     </div>
@@ -718,7 +718,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                 </h3>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                     {futureTokens.map((token) => (
-                                        <div key={token.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm hover:border-indigo-200 transition-colors group relative overflow-hidden">
+                                        <div key={token.id} className="bg-white p-4 rounded-2xl border-2 border-slate-100 shadow-sm hover:border-indigo-200 transition-colors group relative overflow-hidden">
                                             <div className="flex justify-between items-start mb-3">
                                                 <div className="flex flex-col">
                                                     <span className="font-bold text-slate-800 text-lg">#{token.token_number}</span>
@@ -748,7 +748,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                                         onUpdateToken(token.id, 'cancel');
                                                     }
                                                 }}
-                                                className="w-full py-2 bg-white border border-rose-200 text-rose-600 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
+                                                className="w-full py-2 bg-white border-2 border-rose-300 text-rose-700 hover:bg-rose-50 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 flex items-center justify-center gap-2"
                                             >
                                                 <XCircle size={14} />
                                                 Cancel
