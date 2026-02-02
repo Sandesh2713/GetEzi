@@ -148,12 +148,47 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
     const [realStaff, setRealStaff] = useState([]);
     const [timings, setTimings] = useState({
         opening_time: '09:00', closing_time: '17:00',
-        working_days: 'Mon,Tue,Wed,Thu,Fri,Sat', allow_sunday: false, daily_capacity: 100
+        working_days: 'Mon,Tue,Wed,Thu,Fri,Sat', allow_sunday: false, daily_capacity: 100, avg_service_minutes: 10
     });
     const [editStaffMode, setEditStaffMode] = useState(null); // null or staff object
     const [newStaffData, setNewStaffData] = useState({ name: '', email: '', password: '', counter: 1 });
     const [holidays, setHolidays] = useState([]);
     const [newHoliday, setNewHoliday] = useState({ date: '', reason: '' });
+    const [startDate, setStartDate] = useState('');
+    const [endDate, setEndDate] = useState('');
+    const [analytics, setAnalytics] = useState({ totalCustomers: 0, avgWaitTime: 0, completedToday: 0 });
+
+    const handleDownloadReport = async () => {
+        if (!startDate || !endDate) return alert('Please select a date range');
+        try {
+            const token = sessionStorage.getItem('token');
+            const query = new URLSearchParams({
+                start: startDate,
+                end: endDate,
+                format: 'csv',
+                officeId: activeOffice?.id
+            }).toString();
+            const res = await fetch(`${API_BASE}/api/admin/export?${query}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+
+            if (!res.ok) {
+                const data = await res.json();
+                throw new Error(data.error || 'Export failed');
+            }
+
+            const blob = await res.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `report_${startDate}_to_${endDate}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        } catch (err) {
+            alert(err.message);
+        }
+    };
 
     const socketRef = useRef(null);
 
@@ -165,10 +200,12 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                 closing_time: activeOffice.closing_time || '17:00',
                 working_days: activeOffice.working_days || 'Mon,Tue,Wed,Thu,Fri,Sat',
                 allow_sunday: activeOffice.allow_sunday === 1,
-                daily_capacity: activeOffice.daily_capacity || 100
+                daily_capacity: activeOffice.daily_capacity || 100,
+                avg_service_minutes: activeOffice.avg_service_minutes || 10
             });
             fetchStaff();
             fetchHolidays();
+            fetchAnalytics();
 
             // Connect Socket
             const socket = io(API_BASE);
@@ -227,6 +264,20 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
             });
             if (res.ok) fetchHolidays();
         } catch (e) { alert(e.message); }
+    };
+
+    const fetchAnalytics = async () => {
+        if (!activeOffice) return;
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/analytics`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setAnalytics(data);
+            }
+        } catch (e) { console.error(e); }
     };
 
     const fetchStaff = async () => {
@@ -325,7 +376,8 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                 body: JSON.stringify({
                     workingDays: timings.working_days,
                     allowSunday: timings.allow_sunday,
-                    dailyCapacity: timings.daily_capacity
+                    dailyCapacity: timings.daily_capacity,
+                    avgServiceMinutes: timings.avg_service_minutes
                 })
             });
 
@@ -518,7 +570,7 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                         className="text-4xl font-bold text-gray-900 mb-2"
                         variants={itemVariants}
                     >
-                        Super Admin Portal
+                        {activeOffice?.name || 'Office Admin Portal'}
                     </motion.h2>
                     <motion.p className="text-lg text-gray-600" variants={itemVariants}>
                         Clinic Management System
@@ -796,6 +848,15 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                                             />
                                         </div>
                                         <div>
+                                            <h4 className="font-bold text-gray-900 mb-2">Avg Wait Time (mins)</h4>
+                                            <input
+                                                type="number"
+                                                value={timings.avg_service_minutes}
+                                                onChange={e => setTimings({ ...timings, avg_service_minutes: parseInt(e.target.value) })}
+                                                className="w-full px-3 py-2 border rounded-lg"
+                                            />
+                                        </div>
+                                        <div>
                                             <h4 className="font-bold text-gray-900 mb-2">Sunday Operations</h4>
                                             <label className="flex items-center gap-2 px-3 py-2 bg-gray-50 border rounded-lg cursor-pointer">
                                                 <input
@@ -913,15 +974,20 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                                         <div className="flex items-center gap-4 mb-4">
                                             <input
                                                 type="date"
+                                                value={startDate}
+                                                onChange={(e) => setStartDate(e.target.value)}
                                                 className="px-4 py-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none"
                                             />
                                             <span className="text-gray-500">to</span>
                                             <input
                                                 type="date"
+                                                value={endDate}
+                                                onChange={(e) => setEndDate(e.target.value)}
                                                 className="px-4 py-3 border border-gray-200 rounded-lg focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none"
                                             />
                                         </div>
                                         <motion.button
+                                            onClick={handleDownloadReport}
                                             className="w-full py-3 !bg-gradient-to-r !from-green-600 !to-emerald-600 !text-white rounded-lg font-semibold flex items-center justify-center gap-2 hover:shadow-lg transition-all border-none"
                                             whileHover={{ scale: 1.02 }}
                                             whileTap={{ scale: 0.98 }}
@@ -942,9 +1008,9 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                                 <h3 className="text-2xl font-bold text-gray-900 mb-6">Analytics Dashboard</h3>
                                 <div className="grid md:grid-cols-3 gap-6">
                                     {[
-                                        { label: 'Total Customers', value: '1,234', icon: Users },
-                                        { label: 'Avg Wait Time', value: '8 min', icon: Clock },
-                                        { label: 'Completed Today', value: '156', icon: CheckCircle2 },
+                                        { label: 'Total Customers', value: analytics.totalCustomers.toLocaleString(), icon: Users },
+                                        { label: 'Avg Wait Time', value: `${analytics.avgWaitTime} min`, icon: Clock },
+                                        { label: 'Completed Today', value: analytics.completedToday.toLocaleString(), icon: CheckCircle2 },
                                     ].map((stat, index) => {
                                         const Icon = stat.icon;
                                         return (

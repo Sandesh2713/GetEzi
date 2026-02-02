@@ -1440,46 +1440,57 @@ app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
       // We sort by created_at to find the head of the pending queue
       const candidates = allTokens.filter(t =>
         ['WAIT', 'ALLOCATED'].includes(t.status) &&
-        t.presence_status === 'ARRIVED' && // Strict arrival for swap target? User implied just "number 5". Let's stick to queued ones.
+        t.presence_status === 'ARRIVED' &&
         t.id !== token.id
       ).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
       const nextToken = candidates[0]; // T2
 
+      // === NEW: LOG NO-SHOW EVENT ===
+      // Since we reset the token status to WAIT (not no-show), we must log this event explicitly to count it.
+      // Use a unique ID for history to avoid conflict with active token.
+      const historyId = `${token.id}_noshow_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO token_history (id, office_id, user_id, user_name, user_contact, status, token_number, note, created_at, called_at, completed_at, service_type, archived_at, eta_minutes, travel_time_minutes, allocation_time, service_start_time, expected_completion_time, counter_number)
+        VALUES (?, ?, ?, ?, ?, 'no-show', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        historyId, token.office_id, token.user_id, token.user_name, token.user_contact,
+        token.token_number, token.note, toIso(), token.called_at, toIso(),
+        token.service_type, toIso(), token.eta_minutes, token.travel_time_minutes,
+        token.allocation_time, token.service_start_time, null, token.called_by_counter
+      );
+      // ==============================
+
       if (nextToken) {
         // SWAP Logic
-        // Swap token_number and created_at to physically and visually swap them
         const t1Num = token.token_number;
         const t1Created = token.created_at;
         const t2Num = nextToken.token_number;
         const t2Created = nextToken.created_at;
 
-        // Update T1 (The No-Show) -> Becomes T2's position
+        // Reset T1 (The No-Show) -> Becomes T2's position (Back in Queue)
         tokensStmt.updateStatus.run({
           id: token.id,
-          status: 'WAIT', // Back to queue
+          status: 'WAIT',
           completed_at: null,
           called_at: null,
-          allocation_time: null, // Reset constraints
+          allocation_time: null,
           service_start_time: null,
           expected_completion_time: null,
           now: toIso(),
           eta: null,
           assigned_counter: null,
           called_by_counter: null,
-          appointment_date: token.appointment_date // Keep date
+          appointment_date: token.appointment_date
         });
 
-        // Manual Update for Swap fields (using direct prepare avoiding complex updateStatus arg changes)
+        // Swap Physical Identifiers
         db.prepare('UPDATE tokens SET token_number = ?, created_at = ? WHERE id = ?').run(t2Num, t2Created, token.id);
-
-        // Update T2 (The Victim/Promoted) -> Becomes T1's position (Next to be called)
         db.prepare('UPDATE tokens SET token_number = ?, created_at = ? WHERE id = ?').run(t1Num, t1Created, nextToken.id);
 
         return { swapped: true, newNumber: t2Num, swappedWith: t1Num };
       } else {
         // No swap target (End of queue)
-        // Just reset to WAIT
         tokensStmt.updateStatus.run({
           id: token.id,
           status: 'WAIT',
@@ -1499,16 +1510,14 @@ app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
     })();
 
     if (token.user_id) {
-      // Log stats? Delay increment?
       usersStmt.updateStats.run({
         id: token.user_id,
         completed_inc: 0,
-        no_show_inc: 1, // Still count as a "miss", but they are back in queue
+        no_show_inc: 1,
         delay: 0,
         now: toIso()
       });
 
-      // Notify User
       const msg = swapResult.swapped
         ? `You missed your turn! You have been swapped to Token #${swapResult.newNumber}.`
         : `You missed your turn! You have been placed back in the queue.`;
@@ -1517,11 +1526,15 @@ app.post('/api/tokens/:id/no-show', authenticateToken, (req, res) => {
     }
 
     recalculateQueue(token.office_id);
+
+    // Emit 'queue_update' or 'token_swap' - standard update is fine as positions changed
+    io.to(`office_${token.office_id}`).emit('queue_update', { type: 'swap' });
+
     res.json({ success: true, swapped: swapResult.swapped });
 
   } catch (err) {
-    console.error('No-Show Swap Error:', err);
-    res.status(500).json({ error: 'Swap Failed: ' + err.message });
+    console.error('No-Show Error:', err);
+    res.status(500).json({ error: 'System Error: ' + err.message });
   }
 });
 
@@ -1633,12 +1646,23 @@ app.get('/api/offices/:id/staff-queue', authenticateToken, (req, res) => {
       return isToday && t.status === 'COMPLETED';
     }).length;
 
-    const noShowCount = allTokens.filter(t => {
+    // Count active no-shows (if any, though logic usually clears them)
+    const activeNoShowCount = allTokens.filter(t => {
       const isToday = t.appointment_date === today || t.appointment_date === null;
       return isToday && t.status === 'no-show';
     }).length;
 
-    res.json({ upNext, future, stats: { served: completedCount, noShow: noShowCount } });
+    // Count historical no-shows (events logged today)
+    const historyNoShowCount = db.prepare('SELECT COUNT(*) as count FROM token_history WHERE office_id = ? AND status = \'no-show\' AND date(created_at) = ?').get(id, today).count;
+
+    const noShowCount = activeNoShowCount + historyNoShowCount;
+
+    const cancelledCount = allTokens.filter(t => {
+      const isToday = t.appointment_date === today || t.appointment_date === null;
+      return isToday && t.status === 'cancelled';
+    }).length;
+
+    res.json({ upNext, future, stats: { served: completedCount, noShow: noShowCount, cancelled: cancelledCount } });
   } catch (e) {
     console.error("Staff Queue Fetch Error:", e);
     res.status(500).json({ error: "Failed to fetch queue" });
@@ -1713,7 +1737,7 @@ app.patch('/api/offices/:id/config', authenticateToken, (req, res) => {
 
   if (req.user.role !== 'admin' && req.user.role !== 'office_owner') return res.sendStatus(403);
 
-  const { counterCount, workingDays, allowSunday, dailyCapacity } = req.body;
+  const { counterCount, workingDays, allowSunday, dailyCapacity, avgServiceMinutes } = req.body;
   const updates = [];
   const params = { id };
 
@@ -1737,6 +1761,11 @@ app.patch('/api/offices/:id/config', authenticateToken, (req, res) => {
   if (dailyCapacity !== undefined) {
     updates.push("daily_capacity = @dailyCapacity");
     params.dailyCapacity = dailyCapacity;
+  }
+
+  if (avgServiceMinutes !== undefined) {
+    updates.push("avg_service_minutes = @avgServiceMinutes");
+    params.avgServiceMinutes = avgServiceMinutes;
   }
 
   if (updates.length > 0) {
@@ -2137,6 +2166,60 @@ app.get('/api/history', authenticateToken, (req, res) => {
   res.json({ history: mapped });
 });
 
+// Analytics Endpoint
+app.get('/api/offices/:id/analytics', authenticateToken, (req, res) => {
+  const { id } = req.params;
+
+  if (req.user.role !== 'admin' && req.user.role !== 'office_owner') {
+    // Allow checking analytics if owner
+    // Add strict check if needed
+  }
+
+  try {
+    const totalCustomers = db.prepare('SELECT COUNT(*) as count FROM token_history WHERE office_id = ?').get(id).count +
+      db.prepare('SELECT COUNT(*) as count FROM tokens WHERE office_id = ?').get(id).count;
+
+    const today = new Date().toISOString().split('T')[0];
+    const completedToday = db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM token_history 
+        WHERE office_id = ? AND status = 'COMPLETED' AND date(completed_at) = ?
+    `).get(id, today).count +
+      db.prepare(`
+        SELECT COUNT(*) as count 
+        FROM tokens 
+        WHERE office_id = ? AND status = 'COMPLETED' AND date(completed_at) = ?
+    `).get(id, today).count;
+
+    // Calculate Avg Wait Time (Created to Called)
+    // We can fetch relevant timestamps and average them in JS or use SQL
+    // Using simple SQL AVG on generated column or extracting epoch
+    // SQLite doesn't have TIMEDIFF easy for avg, so let's fetch subset or use julianday
+    // (julianday(called_at) - julianday(created_at)) * 24 * 60 = minutes
+    const avgWaitRow = db.prepare(`
+        SELECT AVG((julianday(called_at) - julianday(created_at)) * 1440) as avg_min
+        FROM token_history
+        WHERE office_id = ? AND called_at IS NOT NULL AND created_at IS NOT NULL
+    `).get(id);
+
+    // Also consider active table 'tokens' for completed ones? Usually they move to history fast?
+    // Let's include tokens table completed ones too for accuracy if they linger
+    // For simplicity, history is the main source for stats.
+
+    const avgWaitTime = Math.round(avgWaitRow.avg_min || 0);
+
+    res.json({
+      totalCustomers,
+      completedToday,
+      avgWaitTime
+    });
+
+  } catch (e) {
+    console.error('Analytics Error:', e);
+    res.status(500).json({ error: 'Failed to fetch analytics' });
+  }
+});
+
 // Admin: Export Data
 app.get('/api/admin/export', authenticateToken, async (req, res) => {
   const { start, end, format, officeId } = req.query; // officeId optional for Super Admin, required/inferred for Owner
@@ -2167,7 +2250,7 @@ app.get('/api/admin/export', authenticateToken, async (req, res) => {
     const query = `
       SELECT 
         user_name, user_contact, token_number, status, service_type, 
-        created_at, called_at, completed_at, assigned_counter, office_id
+        created_at, called_at, completed_at, counter_number as assigned_counter, office_id
       FROM token_history 
       WHERE (@officeId IS NULL OR office_id = @officeId)
         AND date(created_at) BETWEEN @start AND @end
@@ -2252,7 +2335,7 @@ app.get('/api/admin/export', authenticateToken, async (req, res) => {
 
   } catch (err) {
     console.error('Export Error:', err);
-    res.status(500).json({ error: 'Export failed' });
+    res.status(500).json({ error: 'Export failed: ' + err.message });
   }
 });
 

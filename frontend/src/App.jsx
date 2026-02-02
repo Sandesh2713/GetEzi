@@ -2591,6 +2591,7 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
   const generalQueue = queueData.upNext.filter(t => t.status === 'WAIT' && !t.assigned_counter); // Global Wait
   const completedCount = queueData.stats?.served || 0;
   const noShowCount = queueData.stats?.noShow || 0;
+  const cancelledCount = queueData.stats?.cancelled || 0;
   const futureBookings = queueData.future;
 
   // Closed Check
@@ -2844,7 +2845,7 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
 
             {/* Stats Cards */}
             {isActive && (
-              <div className="grid grid-cols-2 gap-6">
+              <div className="grid grid-cols-3 gap-6">
                 <motion.div
                   className="bg-gradient-to-br from-emerald-50 to-green-50 rounded-2xl border border-emerald-200 p-6"
                   variants={itemVariants}
@@ -2867,6 +2868,18 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
                     <XCircle className="text-amber-600" size={24} />
                   </div>
                   <div className="text-4xl font-black text-amber-700">{noShowCount}</div>
+                </motion.div>
+
+                <motion.div
+                  className="bg-gradient-to-br from-red-50 to-rose-50 rounded-2xl border border-red-200 p-6"
+                  variants={itemVariants}
+                  whileHover={{ y: -5 }}
+                >
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="font-bold text-gray-900">Cancelled</h4>
+                    <Ban className="text-red-600" size={24} />
+                  </div>
+                  <div className="text-4xl font-black text-red-700">{cancelledCount}</div>
                 </motion.div>
               </div>
             )}
