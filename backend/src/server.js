@@ -324,7 +324,7 @@ const officesStmt = {
 const tokensStmt = {
   getById: db.prepare(`SELECT * FROM tokens WHERE id = ?`),
   getForOffice: db.prepare(`
-    SELECT t.*, u.dob, u.gender, u.email as user_email
+    SELECT t.*, u.dob, u.gender, u.age, u.phone as user_phone, u.email as user_email
     FROM tokens t
     LEFT JOIN users u ON t.user_id = u.id 
     WHERE t.office_id = ? 

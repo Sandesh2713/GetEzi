@@ -2733,6 +2733,25 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
                       {currentToken.user_name}
                     </div>
 
+                    <div className="text-sm text-gray-500 mb-6 max-w-sm mx-auto space-y-1">
+                      {currentToken.user_phone && (
+                        <div className="flex items-center justify-center gap-2">
+                          <Phone size={14} className="text-purple-500" />
+                          <span>{currentToken.user_phone}</span>
+                        </div>
+                      )}
+                      {currentToken.user_email && (
+                        <div className="flex items-center justify-center gap-2">
+                          <Mail size={14} className="text-purple-500" />
+                          <span>{currentToken.user_email}</span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-center gap-4 pt-1">
+                        {currentToken.user_age && <span className="bg-gray-100 px-2 py-0.5 rounded text-xs">Age: {currentToken.user_age}</span>}
+                        {currentToken.dob && <span className="bg-gray-100 px-2 py-0.5 rounded text-xs">DOB: {currentToken.dob}</span>}
+                      </div>
+                    </div>
+
                     <div className="flex items-center justify-center gap-6 mb-8">
                       <div className="text-center">
                         <div className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Service</div>

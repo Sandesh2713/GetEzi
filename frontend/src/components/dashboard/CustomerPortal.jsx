@@ -77,7 +77,15 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
             // Note: Since 'address' might not be on the base user object yet, checking phone is a good proxy for "new user" or just checking if they've visited profile.
             // For this feature, we'll aggressively check if we think they are new.
             // If the user object doesn't have these fields populated, we show the prompt.
-            const isIncomplete = !user.phone || !user.address;
+            // Comprehensive check excluding medical info
+            const requiredFields = [
+                'name', 'email', 'phone', 'dob', 'gender',
+                'address', 'city', 'state', 'zip_code',
+                'emergency_contact_name', 'emergency_contact_phone'
+            ];
+
+            // Check if any required field is falsy
+            const isIncomplete = requiredFields.some(field => !user[field]);
 
             if (isIncomplete) {
                 // Add Notification
@@ -618,7 +626,8 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                         const required = [
                                             'name', 'email', 'phone',
                                             // 'dob' (dateOfBirth might be dob in DB), 'gender', 'blood_type',
-                                            'dob', 'gender', 'blood_type',
+                                            'dob', 'gender',
+                                            // 'blood_type', // Exclude medical info
                                             'address', 'city', 'state', 'zip_code',
                                             'emergency_contact_name', 'emergency_contact_phone'
                                         ];
