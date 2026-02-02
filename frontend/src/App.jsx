@@ -20,7 +20,7 @@ import CustomerPortal from './components/dashboard/CustomerPortal';
 import OwnerDashboard from './components/dashboard/OwnerDashboard';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
-  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee, Calendar, Bell
+  User, LogOut, Phone, Clock, Users, CheckCircle2, XCircle, RefreshCw, AlertCircle, TrendingUp, Activity, Coffee, Calendar, Bell, Ban, UserX
 } from 'lucide-react';
 
 function CreateOfficeWizard({ onSubmit, onBack }) {
@@ -2287,18 +2287,18 @@ function SuperAdminDashboard({ user, office, onLogout, onNavigate }) {
     } catch (err) { setMsg(err.message); } finally { setLoading(false); }
   };
 
-  const handleExport = async () => {
+  const handleExport = async (format = 'xlsx') => {
     if (!exportStart || !exportEnd) return setMsg("Select dates first");
-    setMsg("Exporting...");
+    setMsg(`Exporting ${format.toUpperCase()}...`);
     try {
-      const query = new URLSearchParams({ start: exportStart, end: exportEnd, format: 'xlsx' }).toString();
+      const query = new URLSearchParams({ start: exportStart, end: exportEnd, format }).toString();
       fetch(`/api/admin/export?${query}`, { headers: { Authorization: `Bearer ${sessionStorage.getItem('token')}` } })
         .then(res => res.blob())
         .then(blob => {
           const url = window.URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
-          a.download = `token_history.xlsx`;
+          a.download = `token_history.${format}`;
           document.body.appendChild(a);
           a.click();
           a.remove();
@@ -2514,7 +2514,14 @@ function SuperAdminDashboard({ user, office, onLogout, onNavigate }) {
                   <input type="date" className="input-field" value={exportEnd} onChange={e => setExportEnd(e.target.value)} />
                 </div>
               </div>
-              <button className="btn btn-secondary" style={{ width: '100%', marginTop: '16px' }} onClick={handleExport}>Download CSV Report</button>
+              <div className="grid grid-cols-2 gap-3 mt-4">
+                <button className="btn btn-black" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} onClick={() => handleExport('xlsx')}>
+                  <span style={{ fontSize: '1.2em' }}>📊</span> Excel / Numbers
+                </button>
+                <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }} onClick={() => handleExport('csv')}>
+                  <span style={{ fontSize: '1.2em' }}>📄</span> CSV Format
+                </button>
+              </div>
             </div>
           </section>
         </div>
@@ -2739,33 +2746,51 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4 max-w-md mx-auto mb-4">
+                    <div className="grid grid-cols-3 gap-3 max-w-2xl mx-auto mb-4">
                       <motion.button
                         onClick={async () => {
                           await onUpdateToken(currentToken.id, 'complete');
                           fetchQueue();
                         }}
-                        className="px-6 py-4 !bg-gradient-to-r !from-emerald-600 !to-green-600 !text-white rounded-xl font-bold hover:shadow-lg transition-all border-none"
+                        className="px-4 py-4 !bg-gradient-to-r !from-emerald-600 !to-green-600 !text-white rounded-xl font-bold hover:shadow-lg transition-all border-none"
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
                       >
-                        <div className="flex items-center justify-center gap-2">
+                        <div className="flex flex-col xl:flex-row items-center justify-center gap-2">
                           <CheckCircle2 size={20} />
-                          Complete
+                          <span>Complete</span>
                         </div>
                       </motion.button>
+
+                      <motion.button
+                        onClick={async () => {
+                          if (window.confirm(`Are you sure you want to CANCEL Token #${currentToken.token_number}?`)) {
+                            await onUpdateToken(currentToken.id, 'cancel');
+                            fetchQueue();
+                          }
+                        }}
+                        className="px-4 py-4 !bg-red-50 !text-red-600 rounded-xl font-bold hover:!bg-red-100 transition-all border-none"
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                      >
+                        <div className="flex flex-col xl:flex-row items-center justify-center gap-2">
+                          <Ban size={20} />
+                          <span>Cancel</span>
+                        </div>
+                      </motion.button>
+
                       <motion.button
                         onClick={async () => {
                           await onUpdateToken(currentToken.id, 'no-show');
                           fetchQueue();
                         }}
-                        className="px-6 py-4 !bg-gray-100 !text-gray-700 rounded-xl font-bold hover:!bg-gray-200 transition-all border-none"
+                        className="px-4 py-4 !bg-gray-100 !text-gray-700 rounded-xl font-bold hover:!bg-gray-200 transition-all border-none"
                         whileHover={{ scale: 1.05 }}
                         whileTap={{ scale: 0.95 }}
                       >
-                        <div className="flex items-center justify-center gap-2">
-                          <XCircle size={20} />
-                          No Show
+                        <div className="flex flex-col xl:flex-row items-center justify-center gap-2">
+                          <UserX size={20} />
+                          <span>No Show</span>
                         </div>
                       </motion.button>
                     </div>

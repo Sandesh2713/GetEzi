@@ -175,7 +175,18 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
         }
     }).length;
 
-    const waitTime = currentOffice ? `${(currentOffice.queueCount || 0) * (currentOffice.avg_service_minutes || 10)} min` : '-';
+    // Calculate Active Queue Length (Waiting + Allocated + Being Served)
+    const currentQueueLength = (tokens || []).filter(t =>
+        t.office_id === currentOffice?.id &&
+        ['WAIT', 'ALLOCATED', 'CALLED'].includes(t.status)
+    ).length;
+
+    // Wait Time = Queue Length * Avg Service Time
+    // If queue is empty, wait time is 0 (or we could show "Minimal")
+    const waitTime = currentOffice
+        ? `${currentQueueLength * (currentOffice.avg_service_minutes || 10)} min`
+        : '-';
+
     // Open Slots = Capacity - Today's Valid Bookings
     const availableSlots = currentOffice ? Math.max(0, (currentOffice.daily_capacity || 50) - todayBookingsCount) : '-';
 

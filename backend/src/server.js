@@ -1348,7 +1348,7 @@ app.post('/api/tokens/:id/complete', authenticateToken, (req, res) => {
   recalculateQueue(token.office_id);
 
   // Email Notification: Completed
-  const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
+  const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_email && token.user_email.includes('@') ? token.user_email : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null));
   if (recipientEmail) {
     const office = officesStmt.getById.get(token.office_id);
     sendEmail(recipientEmail, 'Service Completed - GetEzi', emailTemplates.tokenCompleted(
@@ -1395,7 +1395,7 @@ app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
   recalculateQueue(token.office_id);
 
   // Email Notification: Cancelled
-  const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
+  const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_email && token.user_email.includes('@') ? token.user_email : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null));
   if (recipientEmail) {
     const office = officesStmt.getById.get(token.office_id);
     sendEmail(recipientEmail, 'Token Cancelled - GetEzi', emailTemplates.tokenCancelled(
@@ -1404,6 +1404,14 @@ app.post('/api/tokens/:id/cancel', authenticateToken, (req, res) => {
       office.name,
       'Cancelled by user or admin'
     ));
+  }
+
+  // Socket Notification
+  if (token.user_id) {
+    io.to(`user_${token.user_id}`).emit('notification', {
+      message: `Token #${token.token_number} has been cancelled.`,
+      type: 'error'
+    });
   }
 
   res.json({ success: true });
@@ -1567,7 +1575,7 @@ app.post('/api/tokens/:id/recall', authenticateToken, (req, res) => {
     }
 
     // 2. Email Notification
-    const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null);
+    const recipientEmail = (token.user_contact && token.user_contact.includes('@')) ? token.user_contact : (token.user_email && token.user_email.includes('@') ? token.user_email : (token.user_id ? usersStmt.getById.get(token.user_id)?.email : null));
     if (recipientEmail) {
       const office = officesStmt.getById.get(token.office_id);
       sendEmail(recipientEmail, 'Recall Alert - GetEzi', `
@@ -2127,6 +2135,125 @@ app.get('/api/history', authenticateToken, (req, res) => {
   }));
 
   res.json({ history: mapped });
+});
+
+// Admin: Export Data
+app.get('/api/admin/export', authenticateToken, async (req, res) => {
+  const { start, end, format, officeId } = req.query; // officeId optional for Super Admin, required/inferred for Owner
+  const requestingUser = req.user;
+
+  if (requestingUser.role !== 'office_owner' && requestingUser.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  // Determine Office Scope
+  let targetOfficeId = officeId;
+  if (requestingUser.role === 'office_owner') {
+    // Force owner to their office(s). For now assume single office or passed ID.
+    // If no ID passed, try to finding their office.
+    if (!targetOfficeId) {
+      const office = db.prepare('SELECT id FROM offices WHERE owner_id = ?').get(requestingUser.id);
+      if (office) targetOfficeId = office.id;
+    }
+    // Verify ownership
+    const office = officesStmt.getById.get(targetOfficeId);
+    if (!office || office.owner_id !== requestingUser.id) {
+      // Allow if admin, but we are in owner block
+      if (requestingUser.role !== 'admin') return res.status(403).json({ error: 'Access Denied to this office data.' });
+    }
+  }
+
+  try {
+    const query = `
+      SELECT 
+        user_name, user_contact, token_number, status, service_type, 
+        created_at, called_at, completed_at, assigned_counter, office_id
+      FROM token_history 
+      WHERE (@officeId IS NULL OR office_id = @officeId)
+        AND date(created_at) BETWEEN @start AND @end
+      UNION ALL 
+      SELECT 
+        user_name, user_contact, token_number, status, service_type, 
+        created_at, called_at, completed_at, assigned_counter, office_id
+      FROM tokens 
+      WHERE (@officeId IS NULL OR office_id = @officeId)
+        AND status IN ('COMPLETED', 'cancelled', 'no-show', 'history')
+        AND date(created_at) BETWEEN @start AND @end
+      ORDER BY created_at DESC
+    `;
+
+    const rows = db.prepare(query).all({
+      officeId: targetOfficeId || null,
+      start: start || '2000-01-01',
+      end: end || '2099-12-31'
+    });
+
+    if (format === 'csv') {
+      // CSV Generation
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="report_${start}_${end}.csv"`);
+
+      // BOM for Excel compatibility with UTF-8 CSVs
+      res.write('\uFEFF');
+      res.write('Token,Customer,Contact,Service,Status,Counter,Created,Called,Completed\n');
+
+      rows.forEach(r => {
+        const line = [
+          r.token_number,
+          `"${(r.user_name || '').replace(/"/g, '""')}"`,
+          `"${(r.user_contact || '').replace(/"/g, '""')}"`,
+          r.service_type,
+          r.status,
+          r.assigned_counter,
+          r.created_at,
+          r.called_at || '',
+          r.completed_at || ''
+        ].join(',');
+        res.write(line + '\n');
+      });
+      res.end();
+
+    } else {
+      // Excel (XLSX) Generation using ExcelJS
+      const workbook = new ExcelJS.Workbook();
+      const sheet = workbook.addWorksheet('Token Report');
+
+      sheet.columns = [
+        { header: 'Token #', key: 'token', width: 10 },
+        { header: 'Customer Name', key: 'name', width: 20 },
+        { header: 'Contact', key: 'contact', width: 20 },
+        { header: 'Service Type', key: 'service', width: 15 },
+        { header: 'Status', key: 'status', width: 12 },
+        { header: 'Counter', key: 'counter', width: 10 },
+        { header: 'Created At', key: 'created', width: 22 },
+        { header: 'Called At', key: 'called', width: 22 },
+        { header: 'Completed At', key: 'completed', width: 22 }
+      ];
+
+      rows.forEach(r => {
+        sheet.addRow({
+          token: r.token_number,
+          name: r.user_name,
+          contact: r.user_contact,
+          service: r.service_type,
+          status: r.status,
+          counter: r.assigned_counter,
+          created: r.created_at,
+          called: r.called_at,
+          completed: r.completed_at
+        });
+      });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="report_${start}_${end}.xlsx"`);
+      await workbook.xlsx.write(res);
+      res.end();
+    }
+
+  } catch (err) {
+    console.error('Export Error:', err);
+    res.status(500).json({ error: 'Export failed' });
+  }
 });
 
 // Auth Routes

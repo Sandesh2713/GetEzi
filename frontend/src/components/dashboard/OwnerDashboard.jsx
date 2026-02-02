@@ -123,6 +123,28 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
         }
     };
 
+    const handleResume = async () => {
+        if (!activeOffice) return;
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch(`${API_BASE}/api/offices/${activeOffice.id}/resume`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (handleAuthError(res)) return;
+            const data = await res.json();
+            if (data.success) {
+                alert('System is now LIVE.');
+                if (onUpdate) onUpdate();
+            } else {
+                alert('Error: ' + data.error);
+            }
+        } catch (err) {
+            alert('Failed to resume operations');
+            console.error(err);
+        }
+    };
+
     const [realStaff, setRealStaff] = useState([]);
     const [timings, setTimings] = useState({
         opening_time: '09:00', closing_time: '17:00',
@@ -586,22 +608,27 @@ export default function OwnerDashboard({ user, offices, onUpdate, onLogout }) {
                             </motion.div>
 
                             {/* Emergency Controls */}
+                            {/* Emergency / Resume Controls */}
                             <motion.div
-                                className="bg-gradient-to-r from-red-50 to-orange-50 border border-red-200 rounded-2xl p-8"
+                                className={`bg-gradient-to-r ${activeOffice?.state === 'LIVE' ? 'from-red-50 to-orange-50 border-red-200' : 'from-green-50 to-emerald-50 border-green-200'} border rounded-2xl p-8`}
                                 variants={itemVariants}
                                 whileHover={{ y: -5 }}
                             >
-                                <h3 className="text-2xl font-bold text-red-900 mb-4 flex items-center gap-2">
-                                    <AlertCircle size={24} className="text-red-600" />
-                                    Emergency Controls
+                                <h3 className={`text-2xl font-bold ${activeOffice?.state === 'LIVE' ? 'text-red-900' : 'text-green-900'} mb-4 flex items-center gap-2`}>
+                                    {activeOffice?.state === 'LIVE' ? (
+                                        <AlertCircle size={24} className="text-red-600" />
+                                    ) : (
+                                        <Zap size={24} className="text-green-600" />
+                                    )}
+                                    {activeOffice?.state === 'LIVE' ? 'Emergency Controls' : 'Resume Operations'}
                                 </h3>
                                 <motion.button
-                                    onClick={handleShutdown}
-                                    className="w-full py-3 !bg-red-600 !text-white rounded-lg font-semibold hover:!bg-red-700 transition-all border-none"
+                                    onClick={activeOffice?.state === 'LIVE' ? handleShutdown : handleResume}
+                                    className={`w-full py-3 ${activeOffice?.state === 'LIVE' ? '!bg-red-600 hover:!bg-red-700' : '!bg-green-600 hover:!bg-green-700'} !text-white rounded-lg font-semibold transition-all border-none`}
                                     whileHover={{ scale: 1.02 }}
                                     whileTap={{ scale: 0.98 }}
                                 >
-                                    Pause Operations
+                                    {activeOffice?.state === 'LIVE' ? 'Pause Operations' : 'Resume & Go Online'}
                                 </motion.button>
                             </motion.div>
 
