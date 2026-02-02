@@ -406,7 +406,26 @@ const usersStmt = {
       last_activity_at = @now
     WHERE id = @id
   `),
-  updateActivity: db.prepare(`UPDATE users SET last_activity_at = @now WHERE id = @id`)
+  updateActivity: db.prepare(`UPDATE users SET last_activity_at = @now WHERE id = @id`),
+  update: db.prepare(`
+    UPDATE users SET
+      name = @name,
+      email = @email,
+      phone = @phone,
+      dob = @dob,
+      age = @age,
+      gender = @gender,
+      blood_type = @blood_type,
+      address = @address,
+      city = @city,
+      state = @state,
+      zip_code = @zip_code,
+      emergency_contact_name = @emergency_contact_name,
+      emergency_contact_phone = @emergency_contact_phone,
+      allergies = @allergies,
+      medical_notes = @medical_notes
+    WHERE id = @id
+  `)
 };
 
 tokensStmt.updatePrediction = db.prepare(`
@@ -1890,6 +1909,51 @@ app.post('/api/offices/:id/resume', authenticateToken, (req, res) => {
 
   recalculateQueue(id);
   res.json({ success: true, state: 'LIVE' });
+});
+
+// Update User Profile (Full Update)
+app.put('/api/users/:id', authenticateToken, (req, res) => {
+  const { id } = req.params;
+
+  // Security: Only allow updating own profile
+  if (req.user.id !== id && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access Denied' });
+  }
+
+  const {
+    name, email, phone, dob, age, gender, bloodType,
+    address, city, state, zipCode,
+    emergencyContactName, emergencyContactPhone,
+    allergies, medicalNotes
+  } = req.body;
+
+  try {
+    usersStmt.update.run({
+      id,
+      name,
+      email,
+      phone,
+      dob,
+      age,
+      gender,
+      blood_type: bloodType,
+      address,
+      city,
+      state,
+      zip_code: zipCode,
+      emergency_contact_name: emergencyContactName,
+      emergency_contact_phone: emergencyContactPhone,
+      allergies,
+      medical_notes: medicalNotes
+    });
+
+    const updatedUser = usersStmt.getById.get(id);
+    res.json({ success: true, user: updatedUser });
+
+  } catch (err) {
+    console.error('Update User Error:', err);
+    res.status(500).json({ error: 'Failed to update profile' });
+  }
 });
 
 // Endpoint: Get Tokens by User (Strict Split)

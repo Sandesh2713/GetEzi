@@ -201,6 +201,16 @@ const migrations = [
   "ALTER TABLE offices ADD COLUMN auto_noshow_grace_minutes INTEGER DEFAULT 5",
   "ALTER TABLE offices ADD COLUMN working_days TEXT DEFAULT 'Mon,Tue,Wed,Thu,Fri,Sat'",
   "ALTER TABLE offices ADD COLUMN allow_sunday INTEGER DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN address TEXT",
+  "ALTER TABLE users ADD COLUMN city TEXT",
+  "ALTER TABLE users ADD COLUMN state TEXT",
+  "ALTER TABLE users ADD COLUMN zip_code TEXT",
+  "ALTER TABLE users ADD COLUMN emergency_contact_name TEXT",
+  "ALTER TABLE users ADD COLUMN emergency_contact_phone TEXT",
+  "ALTER TABLE users ADD COLUMN blood_type TEXT",
+  "ALTER TABLE users ADD COLUMN allergies TEXT",
+  "ALTER TABLE users ADD COLUMN medical_notes TEXT",
+
 ];
 
 for (const sql of migrations) {

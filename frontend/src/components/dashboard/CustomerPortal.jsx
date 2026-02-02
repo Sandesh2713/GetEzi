@@ -13,7 +13,7 @@ import { SmartCalendar } from '../ui/SmartCalendar';
 import { useMemo } from 'react';
 
 
-export default function CustomerPortal({ user, onLogout, onRefresh, office = {}, availableOffices = [], onOfficeSelect, onBook, tokens = [], onUpdateToken }) {
+export default function CustomerPortal({ user, onLogout, onRefresh, office = {}, availableOffices = [], onOfficeSelect, onBook, tokens = [], onUpdateToken, onUpdateUser }) {
     const [selectedOffice, setSelectedOffice] = useState(office?.id);
     const [showBookingModal, setShowBookingModal] = useState(false);
     const [currentStep, setCurrentStep] = useState(1);
@@ -355,7 +355,7 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
 
     // Render
     if (viewMode === 'profile') {
-        return <CustomerProfile user={user} onBack={() => setViewMode('dashboard')} />;
+        return <CustomerProfile user={user} onBack={() => setViewMode('dashboard')} onUpdateUser={onUpdateUser} />;
     }
 
     if (viewMode === 'preferences') {
@@ -612,7 +612,25 @@ export default function CustomerPortal({ user, onLogout, onRefresh, office = {},
                                 <h2 className="text-3xl font-bold mb-2">Ready to visit?</h2>
                                 <p className="text-blue-100 text-lg mb-8 max-w-md">Book your slot now and skip the long wait. We'll notify you when it's your turn.</p>
                                 <button
-                                    onClick={() => setShowBookingModal(true)}
+                                    onClick={() => {
+                                        // CHECK PROFILE COMPLETION
+                                        // Required fields (Except Medical)
+                                        const required = [
+                                            'name', 'email', 'phone',
+                                            // 'dob' (dateOfBirth might be dob in DB), 'gender', 'blood_type',
+                                            'dob', 'gender', 'blood_type',
+                                            'address', 'city', 'state', 'zip_code',
+                                            'emergency_contact_name', 'emergency_contact_phone'
+                                        ];
+                                        const missing = required.filter(field => !user?.[field]);
+
+                                        if (missing.length > 0) {
+                                            alert(`Please complete your profile first! Missing: ${missing.join(', ').replace(/_/g, ' ')}`);
+                                            setViewMode('profile');
+                                            return;
+                                        }
+                                        setShowBookingModal(true);
+                                    }}
                                     className="!px-8 !py-3.5 !bg-white !text-blue-600 !rounded-xl !font-bold hover:shadow-lg hover:scale-105 transition-all active:scale-95"
                                 >
                                     Book an Appointment

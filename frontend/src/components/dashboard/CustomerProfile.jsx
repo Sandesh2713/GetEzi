@@ -2,25 +2,25 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { User, Mail, Phone, Calendar, MapPin, Heart, Droplet, AlertCircle, Save, Edit2, Upload, Camera, ChevronLeft, ArrowLeft } from 'lucide-react';
 
-export default function CustomerProfile({ user, onBack }) { // Added onBack prop
+export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Added onBack prop
     const [isEditing, setIsEditing] = useState(false);
     const [profileImage, setProfileImage] = useState(null);
     const [formData, setFormData] = useState({
         fullName: user?.name || '',
         email: user?.email || '',
         phone: user?.phone || '',
-        dateOfBirth: user?.dateOfBirth || '',
+        dateOfBirth: user?.dob || '', // Map dob
         age: user?.age || '',
         gender: user?.gender || '',
-        bloodType: user?.bloodType || '',
+        bloodType: user?.blood_type || '', // MAP DB COLUMN
         address: user?.address || '',
         city: user?.city || '',
         state: user?.state || '',
-        zipCode: user?.zipCode || '',
-        emergencyContactName: user?.emergencyContactName || '',
-        emergencyContactPhone: user?.emergencyContactPhone || '',
+        zipCode: user?.zip_code || '', // MAP DB COLUMN
+        emergencyContactName: user?.emergency_contact_name || '', // MAP DB COLUMN
+        emergencyContactPhone: user?.emergency_contact_phone || '', // MAP DB COLUMN
         allergies: user?.allergies || '',
-        medicalNotes: user?.medicalNotes || '',
+        medicalNotes: user?.medical_notes || '', // MAP DB COLUMN
     });
 
     const [editData, setEditData] = useState(formData);
@@ -48,9 +48,40 @@ export default function CustomerProfile({ user, onBack }) { // Added onBack prop
         });
     };
 
-    const handleSaveChanges = () => {
-        setFormData(editData);
-        setIsEditing(false);
+    const handleSaveChanges = async () => {
+        if (onUpdateUser) {
+            // Map back to API expected keys if needed, or send as is if DB column naming strategy matches API payload
+            // In server.js we destructure: name, email, phone, dob, bloodType, address, city, state, zipCode, emergencyContactName, emergencyContactPhone...
+            // So we need to ensure keys match what server expects.
+            // Server expects camelCase for request body keys (bloodType, zipCode) and maps to snake_case for DB.
+            const payload = {
+                name: editData.fullName,
+                email: editData.email,
+                phone: editData.phone,
+                dob: editData.dateOfBirth,
+                age: editData.age,
+                gender: editData.gender,
+                bloodType: editData.bloodType,
+                address: editData.address,
+                city: editData.city,
+                state: editData.state,
+                zipCode: editData.zipCode,
+                emergencyContactName: editData.emergencyContactName,
+                emergencyContactPhone: editData.emergencyContactPhone,
+                allergies: editData.allergies,
+                medicalNotes: editData.medicalNotes
+            };
+
+            const success = await onUpdateUser(payload);
+            if (success) {
+                setFormData(editData);
+                setIsEditing(false);
+            }
+        } else {
+            // Fallback for visual testing only
+            setFormData(editData);
+            setIsEditing(false);
+        }
     };
 
     const calculateAge = (dateString) => {

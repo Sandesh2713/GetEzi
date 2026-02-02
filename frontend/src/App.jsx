@@ -3350,6 +3350,39 @@ function App() {
   };
   const [isBookingModalOpen, setIsBookingModalOpen] = useState(false);
 
+  const handleUpdateUser = async (updatedData) => {
+    if (!user) return;
+    try {
+      const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:4000';
+      const token = sessionStorage.getItem('token');
+      const res = await fetch(`${API_BASE}/api/users/${user.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(updatedData)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        // Update local user state
+        setUser(data.user);
+        // Also update session storage if we store user details there (optional but good practice)
+        // Check if context has setUser mechanism - here we use local state 'user' from useAuth/useState so setUser is correct.
+        setMessage('Profile updated successfully!');
+        setTimeout(() => setMessage(''), 3000);
+        return true;
+      } else {
+        setMessage(data.error || 'Failed to update profile');
+        return false;
+      }
+    } catch (e) {
+      console.error(e);
+      setMessage(e.message);
+      return false;
+    }
+  };
+
   const handleBookingSubmit = async (formData) => {
     if (!selectedOfficeId) return setMessage('Choose an office');
     if (!formData.customerName) return setMessage('Name required');
@@ -3553,6 +3586,7 @@ function App() {
           onBook={handleBookingSubmit}
           tokens={selectedOfficeData?.tokens || []}
           onUpdateToken={updateToken}
+          onUpdateUser={handleUpdateUser}
         />
       </>
     );
