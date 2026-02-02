@@ -345,7 +345,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                 </select>
                             ) : (
                                 <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900 font-medium">
-                                    {formData.gender}
+                                    {formData.gender || <span className="text-gray-400 italic">Not provided</span>}
                                 </div>
                             )}
                         </div>
@@ -361,6 +361,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                     onChange={(e) => handleInputChange('bloodType', e.target.value)}
                                     className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none transition-all"
                                 >
+                                    <option value="">Select Type</option>
                                     <option>A+</option>
                                     <option>A-</option>
                                     <option>B+</option>
@@ -373,7 +374,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                             ) : (
                                 <div className="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-red-50 to-pink-50 rounded-lg border border-red-100">
                                     <Droplet size={20} className="text-red-600" />
-                                    <span className="text-gray-900 font-semibold">{formData.bloodType}</span>
+                                    <span className="text-gray-900 font-semibold">{formData.bloodType || <span className="text-gray-400 font-normal italic">Not provided</span>}</span>
                                 </div>
                             )}
                         </div>
@@ -404,7 +405,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                 />
                             ) : (
                                 <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900">
-                                    {formData.address}
+                                    {formData.address || <span className="text-gray-400 italic">Not provided</span>}
                                 </div>
                             )}
                         </div>
@@ -424,7 +425,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                     />
                                 ) : (
                                     <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900">
-                                        {formData.city}
+                                        {formData.city || <span className="text-gray-400 italic">Not provided</span>}
                                     </div>
                                 )}
                             </div>
@@ -443,7 +444,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                     />
                                 ) : (
                                     <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900">
-                                        {formData.state}
+                                        {formData.state || <span className="text-gray-400 italic">Not provided</span>}
                                     </div>
                                 )}
                             </div>
@@ -462,7 +463,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                     />
                                 ) : (
                                     <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900">
-                                        {formData.zipCode}
+                                        {formData.zipCode || <span className="text-gray-400 italic">Not provided</span>}
                                     </div>
                                 )}
                             </div>
@@ -494,7 +495,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                 />
                             ) : (
                                 <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900">
-                                    {formData.emergencyContactName}
+                                    {formData.emergencyContactName || <span className="text-gray-400 italic">Not provided</span>}
                                 </div>
                             )}
                         </div>
@@ -513,7 +514,7 @@ export default function CustomerProfile({ user, onBack, onUpdateUser }) { // Add
                                 />
                             ) : (
                                 <div className="px-4 py-3 bg-gray-50 rounded-lg text-gray-900">
-                                    {formData.emergencyContactPhone}
+                                    {formData.emergencyContactPhone || <span className="text-gray-400 italic">Not provided</span>}
                                 </div>
                             )}
                         </div>

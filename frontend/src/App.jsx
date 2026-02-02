@@ -3005,7 +3005,7 @@ function StaffDashboard({ user, office, tokens: socketTokens, onCall, onUpdateTo
 }
 
 function App() {
-  const { user, register, logout, loading: authLoading } = useAuth();
+  const { user, setUser, register, logout, loading: authLoading } = useAuth();
 
   const getDefaultView = (u) => {
     if (!u) return 'landing';
