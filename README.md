@@ -31,7 +31,7 @@ GetEzi is a lightweight, high-performance virtual token system. It allows busine
 
 ### 🚀 Quick Start Guide
 
-#### 1. Backend Setup
+#### 1. Backend Setup.
 ```bash
 cd backend
 npm install
